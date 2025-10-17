@@ -1,4 +1,5 @@
 import sys, os
+from typing import Any, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pathlib import Path
@@ -210,6 +211,7 @@ with st.sidebar:
     st.markdown("Welcome back", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
+backend = st.session_state["backend_mode"]
 
 # === SESSION STATE INIT for Chat ===
 if "messages" not in st.session_state:
@@ -243,35 +245,76 @@ if st.session_state.get("is_generating"):
 chat_html_parts.append("</div>")
 st.markdown("".join(chat_html_parts), unsafe_allow_html=True)
 
-# Display retrieval sources
-if st.session_state.get("last_sources"):
+# === RETRIEVAL SOURCES (UI) ===
+sources = st.session_state.get("last_sources", [])
+if sources:
     st.markdown("### Nguồn tham khảo")
-    for i, src in enumerate(st.session_state["last_sources"], 1):
-        file_name, page, score, text = src.get("file_name", "?"), src.get("page_number", "?"), float(src.get("similarity_score", 0.0)), src.get("text", "")
-        snippet = text[:300] + "..." if len(text) > 300 else text
+    for i, src in enumerate(sources, 1):
+        file_name = src.get("file_name", "?")
+        page = src.get("page_number", "?")
+        try:
+            score = float(src.get("similarity_score", 0.0))
+        except Exception:
+            score = 0.0
+        text = src.get("snippet", "") or ""  # Sử dụng 'snippet' thay vì 'text'
+        snippet = text  # Hiển thị full text thay vì cắt ngắn
         st.markdown(f"- [{i}] {file_name} - trang {page} (điểm {score:.3f})")
         with st.expander(f"Xem trích đoạn {i}"):
-            st.markdown(snippet)
+            if snippet.strip():
+                st.markdown(snippet)
+            else:
+                st.write("Không có nội dung trích đoạn")
+else:
+    st.info("Chưa có nguồn tham khảo nào được tìm thấy. Hãy đặt câu hỏi để hệ thống tìm kiếm tài liệu liên quan.")
 
+# === BACKEND CALL ===
+def ask_backend(prompt_text: str) -> Dict[str, Any]:
+    """
+    Xử lý request tới LLM backend
+    
+    Args:
+        prompt_text: User query
+    
+    Returns:
+        Response từ LLM
+    """
+    try:
+        # TODO: Khi có retrieval system, lấy context ở đây
+        context = ""  # Tạm thời để trống
+        
+        # Build messages bằng chat_handler
+        # Lấy context từ Retrieval (nếu có) và lưu nguồn để hiển thị.
+        try:
+            ret = fetch_retrieval(prompt_text, top_k=10, max_chars=8000)  # Tăng lên 8000
+            context = ret.get("context", "") or ""
+            st.session_state["last_sources"] = ret.get("sources", [])
+        except Exception:
+            context = ""
+            st.session_state["last_sources"] = []
 
-# === BACKEND CALL LOGIC ===
-def ask_backend(prompt_text: str) -> dict:
-    try:
-        ret = fetch_retrieval(prompt_text, top_k=15, max_chars=4000)
-        context = ret.get("context", "")
-        st.session_state["last_sources"] = ret.get("sources", [])
-    except Exception as e:
-        st.error(f"Error fetching retrieval context: {e}")
-        context = ""
-        st.session_state["last_sources"] = []
+        messages = build_messages(
+            query=prompt_text,
+            context=context,
+            history=st.session_state["messages"]
+        )
+        
+        # Gọi LLM tương ứng
+        if backend == "gemini":
+            reply = call_gemini_with_timing(messages)
+        else:  # lmstudio
+            reply = call_lmstudio_with_timing(messages)
+        
+        return reply
     
-    messages = build_messages(query=prompt_text, context=context, history=st.session_state["messages"])
-    
-    try:
-        backend_call = call_gemini_with_timing if st.session_state["backend_mode"] == "gemini" else call_lmstudio_with_timing
-        return backend_call(messages)
     except Exception as e:
-        return {"response": f"[Error calling LLM] {e}", "time_taken": 0, "prompt_tokens": 0, "response_tokens": 0, "total_tokens": 0}
+        # Return dict format to match API functions
+        return {
+            "response": f"[Error] {e}",
+            "time_taken": 0,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }
 
 # === CHAT INPUT & RESPONSE GENERATION ===
 if prompt := st.chat_input("Type a new message here", disabled=st.session_state["is_generating"]):
@@ -284,7 +327,8 @@ if st.session_state["is_generating"] and st.session_state["pending_prompt"]:
     start_time = time.time()
     result = ask_backend(st.session_state["pending_prompt"])
     total_time = time.time() - start_time  # Calculate total time including retrieval
-    
+    with st.spinner("Assistant is typing..."):
+        result = ask_backend(st.session_state["pending_prompt"])
     st.session_state["messages"].append({
         "role": "assistant",
         "content": result["response"],
