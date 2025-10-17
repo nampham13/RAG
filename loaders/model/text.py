@@ -96,7 +96,10 @@ class Text:
                 text=text,
                 bbox=bbox,
                 text_source="pymupdf",
-                metadata={}
+                metadata={
+                    'page_number': page_idx + 1,
+                    'block_type': 'text'
+                }
             )
             block_objects.append(block)
         

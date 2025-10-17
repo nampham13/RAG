@@ -84,20 +84,6 @@ class ChunkCacheManager:
         }
         self._save_cache()
 
-    def remove_chunk(self, chunk_id: str):
-        """
-        Remove a chunk from the cache.
-
-        Args:
-            chunk_id: Unique chunk identifier to remove
-        """
-        if chunk_id in self.processed_chunks:
-            del self.processed_chunks[chunk_id]
-            self._save_cache()
-            logger.info(f"Removed chunk {chunk_id} from cache")
-        else:
-            logger.warning(f"Chunk {chunk_id} not found in cache")
-
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get statistics about the cache.

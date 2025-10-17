@@ -127,3 +127,9 @@ section[data-testid="stSidebar"] .sidebar-footer [role="radiogroup"] {
 /* (Tùy chọn) Thu nhỏ bề rộng sidebar cho gọn hơn
 section[data-testid="stSidebar"] { width: 16rem !important; }
 */
+.time-info {
+    font-size: 0.75rem;
+    color: #888;
+    margin-top: 4px;
+    font-style: italic;
+}

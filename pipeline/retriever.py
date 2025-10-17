@@ -7,7 +7,7 @@ Single Responsibility: Vector similarity search and result formatting.
 
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import numpy as np
 import faiss
 
@@ -22,17 +22,20 @@ class Retriever:
     Single Responsibility: Vector search operations and result formatting.
     """
 
-    def __init__(self, embedder: IEmbedder):
+    def __init__(self, embedder: IEmbedder, temperature: float = 1.0):
         """
         Initialize Retriever.
 
         Args:
             embedder: Embedder instance for query encoding
+            temperature: Temperature parameter for softmax scoring (default: 1.0)
         """
         self.embedder = embedder
+        self.temperature = temperature
 
     def search_similar(self, faiss_file: Path, metadata_map_file: Path,
-                      query_text: str, top_k: int = 10) -> List[Dict[str, Any]]:
+                    query_text: str, top_k: int = 5, use_softmax: bool = True,
+                    temperature: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Search for similar chunks using cosine similarity with FAISS.
 
@@ -55,21 +58,29 @@ class Retriever:
 
         # Perform search using inner product (cosine similarity for normalized vectors)
         similarities, indices = index.search(query_normalized, top_k)  # type: ignore[call-arg]
+        # Apply softmax scoring if requested
+        if use_softmax:
+            softmax_scores = self._apply_softmax_scoring(similarities[0], temperature)
+        else:
+            softmax_scores = None
 
-        # Format results (similarities are cosine similarities for normalized vectors)
+        # Format results (similarities are already cosine similarities for normalized vectors)
         results = []
-        for idx, similarity in zip(indices[0], similarities[0]):
-            if idx >= 0 and idx < len(metadata_map):  # Check for valid index
+        for i, (idx, similarity) in enumerate(zip(indices[0], similarities[0])):
+            if idx >= 0 and idx < len(metadata_map):
                 result = metadata_map[idx].copy()
+                result["cosine_similarity"] = float(similarity)
+                result["distance"] = 1.0 - float(similarity)
                 result["similarity_score"] = float(similarity)
+                
+                if use_softmax and softmax_scores is not None:
+                    result["softmax_score"] = float(softmax_scores[i])
+                
                 results.append(result)
             else:
                 logger.warning(f"Invalid index {idx} returned by FAISS search")
 
-        # Sort results by similarity score (descending) to ensure correct ordering
-        results.sort(key=lambda x: x["similarity_score"], reverse=True)
-
-        logger.info(f"Similarity search completed: found {len(results)} results for query")
+        logger.info(f"Cosine similarity search completed: found {len(results)} results for query")
         return results
 
     def _load_index_and_metadata(self, faiss_file: Path, metadata_map_file: Path) -> tuple[faiss.Index, Dict[int, Dict[str, Any]]]:
@@ -117,3 +128,25 @@ class Retriever:
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         norms[norms == 0] = 1  # Avoid division by zero
         return vectors / norms
+    
+    def _apply_softmax_scoring(self, similarities: np.ndarray, temperature: Optional[float] = None) -> np.ndarray:
+        """
+        Apply exponential scaling, temperature, and normalization (softmax) to scores.
+
+        Args:
+            similarities: Raw similarity scores
+            temperature: Temperature parameter for softmax (higher = more uniform, lower = more peaked)
+                        If None, uses instance temperature
+
+        Returns:
+            Softmax-normalized scores
+        """
+        temp = temperature if temperature is not None else self.temperature
+        
+        # Apply exponential and temperature
+        exp_scores = np.exp(similarities / temp)
+        
+        # Normalize to sum to 1
+        normalized_scores = exp_scores / np.sum(exp_scores)
+        
+        return normalized_scores

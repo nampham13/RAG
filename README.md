@@ -215,4 +215,4 @@ else:
 - **Modular Design**: Clean separation of concerns with factory patterns
 - **Error Handling**: Robust processing with connection testing and fallbacks
 - **Normalized Embeddings**: Vectors normalized for optimal cosine similarity performance
-"# RAG" 
+"# RAG_chatbot" 

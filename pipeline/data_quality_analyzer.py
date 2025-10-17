@@ -17,7 +17,6 @@ from embedders.i_embedder import IEmbedder
 
 logger = logging.getLogger(__name__)
 
-
 class DataQualityAnalyzer:
     """
     Handles data quality analysis throughout the RAG pipeline.

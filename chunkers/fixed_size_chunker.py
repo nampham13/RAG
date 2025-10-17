@@ -195,8 +195,29 @@ class FixedSizeChunker(BaseChunker):
         end_char = end_token * 4
         provenance = ProvenanceAgg(doc_id=doc_id, file_path=getattr(self, '_current_file_path', None))
 
-        # Skip provenance tracking for now to avoid issues
-        # TODO: Fix provenance tracking later
+        # Populate provenance by mapping the chunk range back to contributing blocks
+        # Note: token->char mapping is approximate (4 chars/token), but sufficient for page tracking
+        try:
+            for b_start, b_end, b in block_positions:
+                # Check overlap between block span in merged text and chunk char window
+                if b_end > start_char and b_start < end_char:
+                    page_num = None
+                    try:
+                        meta = getattr(b, 'metadata', None)
+                        if isinstance(meta, dict):
+                            page_num = meta.get('page_number')
+                    except Exception:
+                        page_num = None
+
+                    provenance.add_span(BlockSpan(
+                        block_id=getattr(b, 'stable_id', None) or f"block_{id(b)}",
+                        start_char=0,
+                        end_char=len(getattr(b, 'text', '') or ''),
+                        page_number=page_num,
+                    ))
+        except Exception:
+            # If anything goes wrong, keep provenance minimal but not empty
+            pass
 
         # Fast token counting - avoid potential hangs
         try:
