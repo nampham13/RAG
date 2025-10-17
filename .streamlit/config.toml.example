@@ -1,0 +1,21 @@
+# Streamlit Configuration Template
+# Copy this to .streamlit/config.toml and customize for your environment
+
+[theme]
+base = "dark"
+primaryColor = "#10a37f"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1b1f2a"
+textColor = "#e8eaed"
+font = "sans serif"
+
+[client]
+toolbarMode = "viewer"
+
+# Optional: Add more configuration as needed
+# [logger]
+# level = "info"
+# 
+# [server]
+# port = 8501
+# headless = true

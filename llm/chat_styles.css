@@ -1,0 +1,129 @@
+/* Restyle Streamlit header so toggle remains but background is minimal */
+header[data-testid="stHeader"] {
+    position: sticky;
+    top: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+}
+
+/* Reduce top padding on main container */
+.block-container {
+    padding-top: 0rem !important;
+    padding-left: 2rem !important;
+}
+
+.chat-row {
+    display: flex;
+    margin: 6px 0;
+}
+
+.chat-row.user {
+    justify-content: flex-end;
+}
+
+.chat-row.bot {
+    justify-content: flex-start;
+}
+
+.chat-bubble {
+    color: white;
+    padding: 8px 12px;
+    border-radius: 10px;
+    max-width: 75%;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.chat-bubble.user { background: #2d2d2d; }
+.chat-bubble.bot  { background: #1e88e5; }
+
+main { padding-top: 0 !important; }
+
+main .block-container {
+    position: relative;
+    padding: 3rem 1rem 6rem 0 !important;
+    margin: 0 !important;
+}
+
+.typing { display: inline-block; letter-spacing: 2px; }
+.typing span {
+    display: inline-block;
+    width: 6px; height: 6px; margin: 0 2px;
+    background: #fff; border-radius: 50%;
+    animation: bounce 1s infinite ease-in-out;
+}
+.typing span:nth-child(2){ animation-delay: 0.15s; }
+.typing span:nth-child(3){ animation-delay: 0.3s; }
+
+@keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: .5; }
+    40% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* Header Chat Window: cố định, canh bên trái; KHÔNG dùng biến chưa định nghĩa */
+.chat-header {
+    position: fixed;
+    top: 0.9rem;
+    left: calc(var(--sidebar-width)) ;
+    margin: 0;
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 0 0 16px 16px;
+    border: 1px solid #1e88e5;
+    color: #fff;
+    background: linear-gradient(120deg, rgba(30,136,229,.7), rgba(30,136,229,.2));
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    font-weight: 700;
+    box-shadow: 0 6px 18px rgba(0,0,0,.28);
+    z-index: 150;
+    pointer-events: none;
+}
+
+.chat-log { margin-top: 16px; }
+
+/* Luôn chừa khoảng cách dưới cho ô nhập chat */
+section[data-testid="stChatInput"],
+div.stChatFloatingInputContainer {
+    margin-bottom: 5px !important;
+}
+
+/* Biến sidebar thành container tương đối và full chiều cao viewport */
+section[data-testid="stSidebar"] .stApp {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Ghim khối footer xuống đáy sidebar */
+section[data-testid="stSidebar"] .sidebar-footer {
+    margin-top: auto;
+    padding: 1rem;
+    border-top: 1px solid rgba(0,0,0,0.08);
+    background: var(--background-color, white);
+}
+
+/* Style cho Radio group trong footer */
+section[data-testid="stSidebar"] .sidebar-footer [data-testid="stRadio"] {
+    margin-bottom: 1rem;
+}
+
+/* Giúp nội dung radio gọn gàng trong footer */
+section[data-testid="stSidebar"] .sidebar-footer [role="radiogroup"] {
+    width: 100%;
+}
+
+/* (Tùy chọn) Thu nhỏ bề rộng sidebar cho gọn hơn
+section[data-testid="stSidebar"] { width: 16rem !important; }
+*/
