@@ -1,9 +1,8 @@
 """
-LM Studio Client - Chỉ lo gọi LM Studio API
-Nhận messages dạng OpenAI format (List[Dict])
-LM Studio hỗ trợ OpenAI format nên KHÔNG CẦN convert
+LM Studio Client - Gọi LM Studio API
+Endpoint: http://localhost:1234/v1/chat/completions (OpenAI compatible)
+Không cần API key - chỉ cần base_url
 """
-import os
 from typing import Any, List, Dict, Optional
 from openai import OpenAI
 from config_loader import resolve_lmstudio_settings
@@ -11,13 +10,14 @@ import time
 
 def get_client() -> OpenAI:
     """
-    Tạo OpenAI client kết nối tới LM Studio
-    
-    Returns:
-        OpenAI client instance
+    Tạo OpenAI client kết nối tới LM Studio.
+    LM Studio không cần API key, chỉ cần base_url.
     """
     settings = resolve_lmstudio_settings()
-    return OpenAI(base_url=settings["base_url"], api_key=settings["api_key"])
+    return OpenAI(
+        base_url=f"{settings['base_url']}/v1",
+        api_key="not-needed"  # LM Studio không check API key
+    )
 
 def call_lmstudio_with_timing(
     messages: List[Dict[str, str]],
@@ -27,10 +27,17 @@ def call_lmstudio_with_timing(
     max_tokens: Optional[int] = 512,
 ) -> Dict[str, Any]:
     """
-    Call LM Studio API with timing information
+    Call LM Studio API với timing information.
+    
+    Args:
+        messages: OpenAI format messages
+        model: Override model name
+        temperature: Sampling temperature
+        top_p: Top-p sampling
+        max_tokens: Max tokens to generate
     
     Returns:
-        Dict with 'response', 'time_taken', and token usage keys
+        Dict với 'response', 'time_taken', và token usage
     """
     start_time = time.time()
     
@@ -41,6 +48,7 @@ def call_lmstudio_with_timing(
             override_top_p=top_p,
             override_max_tokens=max_tokens,
         )
+        
         client = get_client()
         
         response = client.chat.completions.create(

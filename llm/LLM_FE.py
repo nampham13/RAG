@@ -13,7 +13,8 @@ import time
 from chat_handler import build_messages
 from LLM_API import call_gemini_with_timing
 from LLM_LOCAL import call_lmstudio_with_timing
-from config_loader import ui_default_backend, paths_data_dir
+from LLM_OLLAMA import call_ollama_with_timing
+from config_loader import ui_default_backend, ui_default_local_backend, paths_data_dir
 from pipeline.pipeline_qa import fetch_retrieval
 from pipeline.document_processor import DocumentProcessor
 from embedders.providers.ollama import OllamaModelType
@@ -195,7 +196,7 @@ with st.sidebar:
 
     # === BACKEND SELECTION ===
     st.markdown("<div style='flex: 1;'></div>", unsafe_allow_html=True)
-    backend_options = ["gemini", "lmstudio"]
+    backend_options = ["gemini", "ollama", "lmstudio"]
     if "backend_mode" not in st.session_state:
         default_backend = ui_default_backend()
         st.session_state["backend_mode"] = default_backend if default_backend in backend_options else backend_options[0]
@@ -205,7 +206,11 @@ with st.sidebar:
         "Response source",
         backend_options,
         key="backend_mode",
-        format_func=lambda x: "Gemini API" if x == "gemini" else "LM Studio Local"
+        format_func=lambda x: {
+            "gemini": "☁️ Gemini API",
+            "ollama": "🦙 Ollama (Local)",
+            "lmstudio": "🖥️ LM Studio (Local)"
+        }.get(x, x)
     )
     st.markdown("Welcome back", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -256,6 +261,9 @@ if st.session_state.get("last_sources"):
 
 # === BACKEND CALL LOGIC ===
 def ask_backend(prompt_text: str) -> dict:
+    """
+    Gọi backend được chọn: Gemini, Ollama, hoặc LM Studio.
+    """
     try:
         ret = fetch_retrieval(prompt_text, top_k=15, max_chars=4000)
         context = ret.get("context", "")
@@ -268,10 +276,30 @@ def ask_backend(prompt_text: str) -> dict:
     messages = build_messages(query=prompt_text, context=context, history=st.session_state["messages"])
     
     try:
-        backend_call = call_gemini_with_timing if st.session_state["backend_mode"] == "gemini" else call_lmstudio_with_timing
-        return backend_call(messages)
+        backend_mode = st.session_state.get("backend_mode", "ollama")
+        
+        if backend_mode == "gemini":
+            return call_gemini_with_timing(messages)
+        elif backend_mode == "ollama":
+            return call_ollama_with_timing(messages)
+        elif backend_mode == "lmstudio":
+            return call_lmstudio_with_timing(messages)
+        else:
+            return {
+                "response": f"[Unknown backend: {backend_mode}]",
+                "time_taken": 0,
+                "prompt_tokens": 0,
+                "response_tokens": 0,
+                "total_tokens": 0
+            }
     except Exception as e:
-        return {"response": f"[Error calling LLM] {e}", "time_taken": 0, "prompt_tokens": 0, "response_tokens": 0, "total_tokens": 0}
+        return {
+            "response": f"[Error calling LLM] {e}",
+            "time_taken": 0,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }
 
 # === CHAT INPUT & RESPONSE GENERATION ===
 if prompt := st.chat_input("Type a new message here", disabled=st.session_state["is_generating"]):

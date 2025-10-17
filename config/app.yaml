@@ -5,6 +5,7 @@ paths:
 
 ui:
   default_backend: "gemini"
+  default_local_backend: "ollama"  # Chọn "ollama" hoặc "lmstudio"
 
 llm:
   gemini:
@@ -13,8 +14,16 @@ llm:
     temperature: 0.7
     max_tokens: 2048
 
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "gemma3:4b"
+    temperature: 0.7
+    top_p: 0.95
+    max_tokens: 2048
+
   lmstudio:
     base_url: "http://localhost:1234"
     model: "local-model"
     temperature: 0.7
+    top_p: 0.95
     max_tokens: 2048
