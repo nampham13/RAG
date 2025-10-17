@@ -4,17 +4,10 @@ Nhận messages dạng OpenAI format (List[Dict])
 LM Studio hỗ trợ OpenAI format nên KHÔNG CẦN convert
 """
 import os
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from openai import OpenAI
-
-# Handle both direct execution and module import
-try:
-    # When run as module
-    from .config_loader import resolve_lmstudio_settings
-except ImportError:
-    # When run directly as script
-    from config_loader import resolve_lmstudio_settings
-
+from config_loader import resolve_lmstudio_settings
+import time
 
 def get_client() -> OpenAI:
     """
@@ -26,50 +19,60 @@ def get_client() -> OpenAI:
     settings = resolve_lmstudio_settings()
     return OpenAI(base_url=settings["base_url"], api_key=settings["api_key"])
 
-
-def call_lmstudio(
+def call_lmstudio_with_timing(
     messages: List[Dict[str, str]],
     model: Optional[str] = None,
     temperature: float = 0.7,
     top_p: float = 0.95,
     max_tokens: Optional[int] = 512,
-) -> str:
+) -> Dict[str, Any]:
     """
-    Gọi LM Studio API
-    
-    Args:
-        messages: Messages theo OpenAI format (DÙNG TRỰC TIẾP)
-        model: Tên model (mặc định từ env LMSTUDIO_MODEL)
-        temperature: Temperature (0.0-1.0)
-        top_p: Top-p sampling
-        max_tokens: Max output tokens
+    Call LM Studio API with timing information
     
     Returns:
-        Response text từ LM Studio
+        Dict with 'response', 'time_taken', and token usage keys
     """
+    start_time = time.time()
+    
     try:
-        # Resolve settings (params override config)
         resolved = resolve_lmstudio_settings(
             override_model=model,
             override_temperature=temperature,
             override_top_p=top_p,
             override_max_tokens=max_tokens,
         )
-        # Get client
         client = get_client()
         
-        # Get model name from resolved config
-        
-        # Call API - LM Studio hỗ trợ OpenAI format sẵn!
         response = client.chat.completions.create(
             model=resolved["model"],
-            messages=messages,  # ← DÙNG TRỰC TIẾP, KHÔNG CẦN CONVERT
+            messages=messages,
             temperature=resolved["temperature"],
             top_p=resolved["top_p"],
             max_tokens=resolved["max_tokens"],
         )
         
-        return response.choices[0].message.content or ""
+        elapsed = time.time() - start_time
+        
+        # Extract token usage
+        usage = getattr(response, 'usage', None)
+        prompt_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
+        completion_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+        total_tokens = getattr(usage, 'total_tokens', prompt_tokens + completion_tokens) if usage else 0
+        
+        return {
+            "response": response.choices[0].message.content or "",
+            "time_taken": elapsed,
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": completion_tokens,
+            "total_tokens": total_tokens
+        }
     
     except Exception as e:
-        return f"[LM Studio Error] {e}"
+        elapsed = time.time() - start_time
+        return {
+            "response": f"[LM Studio Error] {e}",
+            "time_taken": elapsed,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }

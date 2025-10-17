@@ -2,15 +2,8 @@
 Chat Handler - Xử lý logic chat
 Không phụ thuộc vào LLM cụ thể nào
 """
-from typing import List, Dict, Optional
-
-# Handle both direct execution and module import
-try:
-    # When run as module
-    from .config_loader import paths_prompt_path
-except ImportError:
-    # When run directly as script
-    from config_loader import paths_prompt_path
+from typing import List, Dict
+from config_loader import paths_prompt_path
 
 # Đường dẫn cố định tới system prompt
 
@@ -55,7 +48,7 @@ def format_system_prompt(context: str) -> str:
     return template.format(context=context)
 
 
-def normalize_history(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def normalize_history(history: List[Dict]) -> List[Dict]:
     """
     Chuẩn hóa history về OpenAI Chat Format
     
@@ -89,7 +82,7 @@ def normalize_history(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return normalized
 
 
-def build_messages(query: str, context: str = "", history: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, str]]:
+def build_messages(query: str, context: str = "", history: List[Dict] = None) -> List[Dict]:
     """
     Build messages list theo OpenAI Chat Format
     

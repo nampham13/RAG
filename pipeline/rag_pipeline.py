@@ -74,14 +74,7 @@ class RAGPipeline:
         # Initialize components
         logger.info("Initializing RAG Pipeline...")
         self.loader = PDFLoader.create_default()
-        
-        # Improved chunking configuration for better retrieval accuracy
-        from chunkers.hybrid_chunker import ChunkerMode
-        self.chunker = HybridChunker(
-            max_tokens=250,  # Smaller chunks for better precision
-            overlap_tokens=35,  # Maintain context
-            mode=ChunkerMode.SEMANTIC_FIRST  # Prioritize semantic boundaries
-        )
+        self.chunker = HybridChunker(max_tokens=200, overlap_tokens=20)
         
         # Initialize embedder with model switcher
         self.model_switcher = OllamaModelSwitcher()
@@ -115,94 +108,23 @@ class RAGPipeline:
         )
         
         logger.info(f"Loader: PDFLoader")
-        logger.info(f"Chunker: {self.chunker}")
+        logger.info(f"Chunker: HybridChunker")
         logger.info(f"Embedder: {self.embedder.profile.model_id}")
         logger.info(f"Dimension: {self.embedder.dimension}")
         logger.info(f"Output: {self.output_dir}")
     
-    def is_chunk_processed(self, chunk_id: str, content_hash: str, chunk_text: str = "") -> bool:
+    def is_chunk_processed(self, chunk_id: str, content_hash: str) -> bool:
         """
-        Check if chunk has already been processed and meets quality standards.
+        Check if chunk has already been processed.
 
         Args:
             chunk_id: Unique chunk identifier
             content_hash: Hash of chunk content for verification
-            chunk_text: Text content of the chunk for quality check
 
         Returns:
-            True if chunk was already processed and meets quality standards, False otherwise
+            True if chunk was already processed, False otherwise
         """
-        # First check if chunk exists in cache
-        if not self.chunk_cache.is_chunk_processed(chunk_id, content_hash):
-            return False
-
-        # If chunk exists, check quality - if poor quality, remove from cache and reprocess
-        if not self._check_chunk_quality(chunk_text):
-            logger.warning(f"Chunk {chunk_id} failed quality check, removing from cache for reprocessing")
-            self.chunk_cache.remove_chunk(chunk_id)
-            return False
-
-        return True
-
-    def _is_pdf_already_processed(self, pdf_path: Path) -> bool:
-        """
-        Check if PDF has already been processed (has FAISS index).
-
-        Args:
-            pdf_path: Path to PDF file
-
-        Returns:
-            True if PDF already has FAISS index, False otherwise
-        """
-        file_name = pdf_path.stem
-        vectors_dir = self.output_dir / "vectors"
-
-        if not vectors_dir.exists():
-            return False
-
-        # Look for FAISS index files that match this PDF
-        for faiss_file in vectors_dir.glob(f"{file_name}_vectors_*.faiss"):
-            if faiss_file.exists():
-                logger.info(f"PDF {pdf_path.name} already processed, skipping embedding")
-                return True
-
-        return False
-
-    def _check_chunk_quality(self, chunk_text: str) -> bool:
-        """
-        Check if chunk meets quality standards.
-
-        Args:
-            chunk_text: Text content of the chunk
-
-        Returns:
-            True if chunk meets quality standards, False otherwise
-        """
-        if not chunk_text or not chunk_text.strip():
-            logger.warning("Chunk is empty or contains only whitespace")
-            return False
-
-        # Check minimum length (after stripping whitespace)
-        text_length = len(chunk_text.strip())
-        if text_length < 10:  # Too short
-            logger.warning(f"Chunk too short: {text_length} characters")
-            return False
-
-        # Check for excessive special characters (might indicate parsing errors)
-        special_chars = sum(1 for c in chunk_text if not c.isalnum() and not c.isspace() and c not in '.,!?-:;()[]{}')
-        if special_chars / len(chunk_text) > 0.3:  # More than 30% special characters
-            logger.warning(f"Chunk has too many special characters: {special_chars}/{len(chunk_text)}")
-            return False
-
-        # Check for repetitive content (simple heuristic)
-        words = chunk_text.lower().split()
-        if len(words) > 10:
-            unique_words = set(words)
-            if len(unique_words) / len(words) < 0.3:  # Less than 30% unique words
-                logger.warning("Chunk appears to have repetitive content")
-                return False
-
-        return True
+        return self.chunk_cache.is_chunk_processed(chunk_id, content_hash)
 
     def mark_chunk_processed(self, chunk_id: str, content_hash: str, metadata: Dict[str, Any]):
         """
@@ -309,12 +231,13 @@ class RAGPipeline:
             "cache_enabled": True
         }
     
-    def process_pdf(self, pdf_path: str | Path) -> Dict[str, Any]:
+    def process_pdf(self, pdf_path: str | Path, chunk_callback=None) -> Dict[str, Any]:
         """
         Process single PDF through complete pipeline.
         
         Args:
             pdf_path: Path to PDF file (str or Path)
+            chunk_callback: Optional callback function(current, total) for progress
             
         Returns:
             Dict with processing results and file paths
@@ -322,16 +245,6 @@ class RAGPipeline:
         pdf_path = Path(pdf_path)
         file_name = pdf_path.stem
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Check if PDF already processed - skip embedding if FAISS index exists
-        if self._is_pdf_already_processed(pdf_path):
-            logger.info(f"PDF {pdf_path.name} already has FAISS index, skipping processing")
-            return {
-                "status": "skipped",
-                "message": "PDF already processed",
-                "pdf_path": str(pdf_path),
-                "file_name": file_name
-            }
         
         logger.info(f"Processing PDF: {pdf_path.name}")
         
@@ -345,19 +258,30 @@ class RAGPipeline:
         logger.info("Chunking document...")
         chunk_set = self.chunker.chunk(pdf_doc)
         logger.info(f"Created {len(chunk_set.chunks)} chunks, strategy: {chunk_set.chunk_strategy}, tokens: {chunk_set.total_tokens}")
+        
         # Step 3: Generate embeddings
         logger.info("Generating embeddings...")
         embeddings_data = []
         skipped_chunks = 0
+        total_chunks = len(chunk_set.chunks)
+        
+        # Call callback with initial state
+        if chunk_callback:
+            chunk_callback(0, total_chunks)
         
         for idx, chunk in enumerate(chunk_set.chunks, 1):
             # Create content hash for duplicate checking
             content_hash = hashlib.md5(chunk.text.encode('utf-8')).hexdigest()
             
             # Check if chunk already processed
-            if self.is_chunk_processed(chunk.chunk_id, content_hash, chunk.text):
+            if self.is_chunk_processed(chunk.chunk_id, content_hash):
                 logger.info(f"Skipping already processed chunk {idx}/{len(chunk_set.chunks)}: {chunk.chunk_id}")
                 skipped_chunks += 1
+                
+                # Update progress via callback even for skipped chunks
+                if chunk_callback:
+                    chunk_callback(idx, total_chunks)
+                
                 continue
             
             # Test connection on first chunk
@@ -425,6 +349,10 @@ class RAGPipeline:
                 'token_count': chunk.token_count,
                 'is_table': chunk_embedding['is_table']
             })
+            
+            # Update progress via callback
+            if chunk_callback:
+                chunk_callback(idx, total_chunks)
             
             if (idx - skipped_chunks) % 10 == 0:
                 logger.info(f"Processed {idx}/{len(chunk_set.chunks)} chunks ({skipped_chunks} skipped)...")
@@ -568,7 +496,8 @@ class RAGPipeline:
         return self.vector_store.load_index(faiss_file, metadata_map_file)
     
     def search_similar(self, faiss_file: Path, metadata_map_file: Path,
-                      query_text: str, top_k: int = 10) -> List[Dict[str, Any]]:
+                    query_text: str, top_k: int = 5, use_softmax: bool = True,
+                    temperature: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Search for similar chunks using FAISS index.
         
@@ -581,5 +510,32 @@ class RAGPipeline:
         Returns:
             List of similar chunks with metadata and distances
         """
-        return self.retriever.search_similar(faiss_file, metadata_map_file, query_text, top_k)
+        return self.retriever.search_similar(faiss_file, metadata_map_file, query_text, top_k, use_softmax, temperature)
+
+def main():
+    """Main entry point for RAG Pipeline."""
+    logger.info("Starting RAG Pipeline")
     
+    # Initialize pipeline với Gemma embedder
+    pipeline = RAGPipeline(
+        output_dir="data",
+        model_type=OllamaModelType.GEMMA
+    )
+    
+    logger.info("RAG Pipeline initialized and ready to use")
+    
+    # Process all PDFs in data/pdf directory
+    try:
+        results = pipeline.process_directory()
+        
+        logger.info("All processing completed successfully")
+        logger.info(f"Output files saved to: {pipeline.output_dir}")
+        
+    except Exception as e:
+        logger.error(f"Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()

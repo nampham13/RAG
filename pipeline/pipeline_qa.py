@@ -5,8 +5,8 @@ Module chỉ phụ trách phần Retrieval (FAISS search) để UI có thể hi�
 và/hoặc tự ghép context vào prompt. Không gọi LLM tại đây.
 
 Sử dụng nhanh:
-    from RAG_system.pipeline.rag_pipeline import RAGPipeline
-    from RAG_system.pipeline.rag_qa_engine import RAGRetrievalService
+    from pipeline.rag_pipeline import RAGPipeline
+    from pipeline.rag_qa_engine import RAGRetrievalService
 
     pipeline = RAGPipeline(output_dir="data")
     retriever = RAGRetrievalService(pipeline)
@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 from pipeline.rag_pipeline import RAGPipeline
-from pipeline.query_expander import QueryExpander
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,6 @@ class RAGRetrievalService:
 
     def __init__(self, pipeline: RAGPipeline):
         self.pipeline = pipeline
-        self.query_expander = QueryExpander()
 
     # ---------- Retrieval utilities ----------
     def _match_metadata_for_vectors(self, vectors_file: Path) -> Optional[Path]:
@@ -103,25 +101,18 @@ class RAGRetrievalService:
         except Exception as e:
             logger.error(f"Failed to cleanup corrupted files: {e}")
 
-    def build_context(self, results: List[Dict[str, Any]], max_chars: int = 8000) -> str:
+    def build_context(self, results: List[Dict[str, Any]], max_chars: int = 4000) -> str:
         """
         Tạo chuỗi context gọn từ danh sách kết quả retrieval (top-k).
         Sử dụng provenance information để tạo source attribution chi tiết hơn.
-        Cắt ngắn mỗi chunk để đảm bảo có chỗ cho nhiều sources.
         """
         parts: List[str] = []
         total = 0
-        max_per_chunk = max(400, max_chars // 8)  # Mỗi chunk tối đa 400 ký tự để đảm bảo capture keywords
-        
         for i, r in enumerate(results, 1):
             file_name = r.get("file_name", "?")
             page = r.get("page_number", "?")
             score = r.get("similarity_score", 0.0)
             text = r.get("text", "")
-            
-            # Cắt ngắn text
-            if len(text) > max_per_chunk:
-                text = text[:max_per_chunk] + "..."
 
             # Enhanced source attribution using provenance if available
             provenance = r.get("provenance")
@@ -158,7 +149,7 @@ class RAGRetrievalService:
                 break
         return "\n\n".join(parts)
 
-    def retrieve(self, query_text: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def retrieve(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         Trả về danh sách kết quả giống với retriever (metadata + similarity_score).
         Nếu không có index hoặc embedder không sẵn sàng, trả về list rỗng.
@@ -171,15 +162,11 @@ class RAGRetrievalService:
             if not self.pipeline.embedder.test_connection():
                 logger.warning("Embedder (Ollama) chưa sẵn sàng; bỏ qua retrieval.")
                 return []
-            
-            # Expand query to improve matching
-            expanded_query = self.query_expander.expand(query_text)
-            
             faiss_file, metadata_map_file = pair
             return self.pipeline.search_similar(
                 faiss_file=faiss_file,
                 metadata_map_file=metadata_map_file,
-                query_text=expanded_query,  # Use expanded query
+                query_text=query_text,
                 top_k=top_k,
             )
         except Exception as e:
@@ -215,8 +202,8 @@ class RAGRetrievalService:
 def fetch_retrieval(
     query_text: str,
     pipeline: Optional[RAGPipeline] = None,
-    top_k: int = 10,
-    max_chars: int = 8000,
+    top_k: int = 5,
+    max_chars: int = 4000,
 ) -> Dict[str, Any]:
     """
     Tiện ích một hàm: thực hiện retrieval và trả về {context, sources} cho UI.

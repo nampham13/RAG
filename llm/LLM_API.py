@@ -2,46 +2,12 @@
 Gemini Client - Chỉ lo gọi Gemini API
 Nhận messages dạng OpenAI format (List[Dict])
 """
-"""
-Gemini Client - Chỉ lo gọi Gemini API
-Nhận messages dạng OpenAI format (List[Dict])
-"""
-# Configure logging and suppress warnings BEFORE importing Google libraries
-import os
-import sys
-import logging
-
-# Set environment variables to suppress warnings
-os.environ['GRPC_VERBOSITY'] = 'ERROR'
-os.environ['GRPC_TRACE'] = ''
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# Configure logging to suppress Google Cloud warnings
-logging.basicConfig(level=logging.WARNING)
-logging.getLogger('absl').setLevel(logging.ERROR)
-logging.getLogger('google').setLevel(logging.WARNING)
-logging.getLogger('google.auth').setLevel(logging.ERROR)
-logging.getLogger('google.api_core').setLevel(logging.ERROR)
-
-# Note: ALTS credential warnings are harmless and can be ignored
-# They appear when Google Cloud libraries detect they're not running on GCP
-
 import google.generativeai as genai
-
-# Handle both direct execution and module import
-try:
-    # When run as module
-    from .config_loader import resolve_gemini_settings
-except ImportError:
-    # When run directly as script
-    from config_loader import resolve_gemini_settings
-
-from typing import List, Dict, Optional
-
+from config_loader import resolve_gemini_settings
+from typing import Any, List, Dict, Optional
+import time
 
 # Cấu hình API key
-
-
 
 def convert_to_gemini_format(messages: List[Dict[str, str]]) -> str:
     """
@@ -96,70 +62,90 @@ def clean_response(response_text: str) -> str:
     
     return text
 
-
-def call_gemini(
+def call_gemini_with_timing(
     messages: List[Dict[str, str]],
     model_name: Optional[str] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
-) -> str:
+) -> Dict[str, Any]:
     """
-    Gọi Gemini API
-    
-    Args:
-        messages: Messages theo OpenAI format
-        model_name: Tên model Gemini
-        temperature: Temperature (0.0-1.0)
-        max_tokens: Max output tokens
+    Call Gemini API with timing information
     
     Returns:
-        Response text từ Gemini (đã clean)
+        Dict with 'response', 'time_taken', and token usage keys
     """
+    start_time = time.time()
+    
+    # Get settings and configure
+    _settings = resolve_gemini_settings(
+        override_model=model_name,
+        override_temperature=temperature,
+        override_max_tokens=max_tokens,
+    )
+    _api_key = _settings.get("api_key")
+    if not _api_key:
+        return {
+            "response": "[Gemini Error] Missing API key (configure secrets or env).",
+            "time_taken": 0,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }
+    
+    genai.configure(api_key=_api_key)
+    
+    if model_name is None:
+        model_name = _settings.get("model")
+    if temperature is None:
+        temperature = _settings.get("temperature")
+    if max_tokens is None:
+        max_tokens = _settings.get("max_tokens")
+    
     try:
-        # Resolve config and API key
-        _settings = resolve_gemini_settings(
-            override_model=model_name,
-            override_temperature=temperature,
-            override_max_tokens=max_tokens,
-        )
-        _api_key = _settings.get("api_key")
-        if not _api_key:
-            return "[Gemini Error] Missing API key (configure secrets or env)."
-        
-        # Configure API key globally
-        genai.configure(api_key=_api_key)
-        
-        # Fill defaults from config when args are None
-        if model_name is None:
-            model_name = _settings.get("model", "gemini-2.0-flash-exp")  # Default fallback
-        if temperature is None:
-            temperature = _settings.get("temperature", 0.7)
-        if max_tokens is None:
-            max_tokens = _settings.get("max_tokens", 1000)
-        
-        # Ensure model_name is not None
-        if not model_name:
-            model_name = "gemini-2.0-flash-exp"
-        # Convert format
         prompt_text = convert_to_gemini_format(messages)
+        model = genai.GenerativeModel(model_name)
         
-        # Initialize model (without api_key parameter)
-        model = genai.GenerativeModel(model_name) 
-        
-        # Generate
-        generation_config = genai.GenerationConfig()
+        generation_config = {}
         if temperature is not None:
-            generation_config.temperature = temperature
+            generation_config["temperature"] = temperature
         if max_tokens is not None:
-            generation_config.max_output_tokens = max_tokens
+            generation_config["max_output_tokens"] = max_tokens
         
-        response = model.generate_content(
-            prompt_text,
-            generation_config=generation_config
-        )
+        if generation_config:
+            response = model.generate_content(
+                prompt_text,
+                generation_config=generation_config
+            )
+        else:
+            response = model.generate_content(prompt_text)
         
-        # Clean response trước khi return
-        return clean_response(response.text)
+        elapsed = time.time() - start_time
+        
+        # Extract token usage from response
+        usage_metadata = getattr(response, 'usage_metadata', None)
+        if usage_metadata:
+            prompt_tokens = getattr(usage_metadata, 'prompt_token_count', 0)
+            response_tokens = getattr(usage_metadata, 'candidates_token_count', 0)
+        else:
+            prompt_tokens = 0
+            response_tokens = 0
+        
+        total_tokens = prompt_tokens + response_tokens
+        
+        return {
+            "response": clean_response(response.text),
+            "time_taken": elapsed,
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": response_tokens,
+            "total_tokens": total_tokens
+        }
     
     except Exception as e:
-        return f"[Gemini Error] {e}"
+        elapsed = time.time() - start_time
+        return {
+            "response": f"[Gemini Error] {e}",
+            "time_taken": elapsed,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }

@@ -86,17 +86,8 @@ def resolve_gemini_settings(override_model=None, override_temperature=None, over
     try:
         import streamlit as st
         # Try to get from Streamlit secrets first
-        if hasattr(st, 'secrets'):
-            # Check for [gemini] section in secrets.toml
-            if 'gemini' in st.secrets and 'api_key' in st.secrets['gemini']:
-                api_key = st.secrets['gemini']['api_key']
-            # Fallback to direct gemini_api_key
-            elif 'gemini_api_key' in st.secrets:
-                api_key = st.secrets['gemini_api_key']
-            else:
-                # Fallback to config file
-                cfg = _require(get_config(), "llm.gemini")
-                api_key = cfg.get("api_key", "")
+        if hasattr(st, 'secrets') and 'gemini_api_key' in st.secrets:
+            api_key = st.secrets['gemini_api_key']
         else:
             # Fallback to config file
             cfg = _require(get_config(), "llm.gemini")
