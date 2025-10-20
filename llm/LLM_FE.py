@@ -246,18 +246,30 @@ chat_html_parts.append("</div>")
 st.markdown("".join(chat_html_parts), unsafe_allow_html=True)
 
 # === RETRIEVAL SOURCES (UI) ===
+# === RETRIEVAL SOURCES (UI) ===
 sources = st.session_state.get("last_sources", [])
 if sources:
     st.markdown("### Nguồn tham khảo")
     for i, src in enumerate(sources, 1):
         file_name = src.get("file_name", "?")
-        page = src.get("page_number", "?")
+        
+        # Fix: Try multiple keys for page number
+        page = src.get("page_number")
+        if page is None:
+            # Fallback to page_numbers list if page_number is None
+            page_numbers = src.get("page_numbers", [])
+            if page_numbers:
+                page = page_numbers[0]  # Get first page from list
+            else:
+                page = "?"
+        
         try:
             score = float(src.get("similarity_score", 0.0))
         except Exception:
             score = 0.0
-        text = src.get("snippet", "") or ""  # Sử dụng 'snippet' thay vì 'text'
-        snippet = text  # Hiển thị full text thay vì cắt ngắn
+        text = src.get("snippet", "") or ""
+        snippet = text
+        
         st.markdown(f"- [{i}] {file_name} - trang {page} (điểm {score:.3f})")
         with st.expander(f"Xem trích đoạn {i}"):
             if snippet.strip():

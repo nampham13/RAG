@@ -109,17 +109,13 @@ class RAGRetrievalService:
         """
         parts: List[str] = []
         total = 0
-        max_per_chunk = max(400, max_chars // 8)  # Mỗi chunk tối đa 400 ký tự để đảm bảo capture keywords
+        max_per_chunk = max_chars  # Don't limit per chunk, use full max_chars
         
         for i, r in enumerate(results, 1):
             file_name = r.get("file_name", "?")
             page = r.get("page_number", "?")
             score = r.get("similarity_score", 0.0)
             text = r.get("text", "")
-            
-            # Cắt ngắn text
-            if len(text) > max_per_chunk:
-                text = text[:max_per_chunk] + "..."
 
             # Enhanced source attribution using provenance if available
             provenance = r.get("provenance")
@@ -156,7 +152,7 @@ class RAGRetrievalService:
                 break
         return "\n\n".join(parts)
 
-    def to_ui_items(self, results: List[Dict[str, Any]], max_text_len: int = 500) -> List[Dict[str, Any]]:
+    def to_ui_items(self, results: List[Dict[str, Any]], max_text_len: int = 3000) -> List[Dict[str, Any]]:
         """
         Chuyển danh sách kết quả sang dạng dễ hiển thị ở UI.
         Mỗi item gồm: title, snippet, file_name, page_number, similarity_score, distance.
@@ -168,7 +164,8 @@ class RAGRetrievalService:
             score = float(r.get("similarity_score", 0.0))
             dist = float(r.get("distance", 0.0))
             text = r.get("text", "") or ""
-            snippet = (text[: max_text_len - 3] + "...") if len(text) > max_text_len else text
+            # no truncate
+            snippet = text
             ui_items.append(
                 {
                     "title": f"{file_name} - trang {page}",
