@@ -1,9 +1,12 @@
 import os
+import gc
 import logging
 import hashlib
 from dataclasses import asdict
 from typing import Any, Optional, List, Dict, Tuple
 import re
+import tempfile
+import contextlib
 import fitz  # PyMuPDF
 import pdfplumber
 
@@ -13,7 +16,10 @@ from .model.table import TableSchema, TableRow, TableCell
 from .model.block import Block
 from .model.text import Text
 
+# Configure logging - clear any existing handlers to prevent duplicate logs
 logger = logging.getLogger("PDFLoader")
+if logger.handlers:
+    logger.handlers.clear()
 
 
 class PDFLoader:
@@ -187,21 +193,27 @@ class PDFLoader:
         return h.hexdigest()
 
     def _extract_tables_for_page(self, file_path: str, page_num_1based: int, plumber_pdf: Optional[Any]) -> List[Dict[str, Any]]:
+        """Extract tables for a page with fallback strategy and error handling."""
         camelot_module = None
         try:
             import camelot as _camelot
             camelot_module = _camelot
         except Exception:
             camelot_module = None
+        
         try:
-            return TableSchema.extract_tables_for_page(
+            # Try to extract tables with proper error suppression
+            tables = TableSchema.extract_tables_for_page(
                 file_path=file_path,
                 page_num_1based=page_num_1based,
                 plumber_pdf=plumber_pdf,
                 tables_engine=self.tables_engine,
                 camelot_module=camelot_module,
             )
-        except Exception:
+            return tables if tables else []
+        except Exception as e:
+            # Log warning but don't raise - continue processing without tables
+            logger.debug(f"Table extraction failed for page {page_num_1based}: {e}")
             return []
 
     def _extract_table_caption(self, page: Any, table_bbox: Optional[tuple], text_blocks: List[Any], next_page_blocks: Optional[List[Any]] = None, page_height: Optional[float] = None) -> Optional[str]:
@@ -228,20 +240,95 @@ class PDFLoader:
             page_height=page_height
         )
 
+    def _deduplicate_text_and_tables(self, blocks: List[Block]) -> List[Block]:
+        """
+        Remove text blocks that overlap with table blocks (prefer tables for structured data).
+        Uses text similarity to detect duplicates.
+        """
+        from .model.block import TableBlock
+        import difflib
+        
+        text_blocks = []
+        table_blocks = []
+        
+        for block in blocks:
+            if isinstance(block, TableBlock):
+                table_blocks.append(block)
+            else:
+                text_blocks.append(block)
+        
+        if not table_blocks:
+            return blocks
+        
+        logger.debug(f"Deduplication: {len(text_blocks)} text blocks, {len(table_blocks)} table blocks")
+        
+        # Keep non-duplicate text blocks
+        deduplicated_blocks = []
+        
+        for text_block in text_blocks:
+            is_duplicate = False
+            text_content = text_block.text.lower().strip()
+            # Remove extra whitespace for better comparison
+            text_normalized = ' '.join(text_content.split())
+            
+            # Check if table content is contained within text block
+            for table_block in table_blocks:
+                table_content = table_block.text.lower().strip()
+                table_normalized = ' '.join(table_content.split())
+                
+                # Skip very short tables
+                if len(table_normalized) < 50:
+                    continue
+                
+                # Method 1: Substring containment (fast check)
+                # Check if TEXT content is contained WITHIN table (not the reverse!)
+                if text_normalized in table_normalized:
+                    is_duplicate = True
+                    logger.debug(f"Removing duplicate text block (text contained in table)")
+                    break
+                
+                # Method 2: SequenceMatcher for partial matches
+                # Calculate how much of TEXT appears in table (check if table "covers" the text)
+                # Use find_longest_match to see if significant portion of text is in table
+                matcher = difflib.SequenceMatcher(None, text_normalized, table_normalized)
+                match = matcher.find_longest_match(0, len(text_normalized), 0, len(table_normalized))
+                
+                # If >60% of text block appears consecutively in table, it's a duplicate
+                coverage_ratio = match.size / len(text_normalized) if len(text_normalized) > 0 else 0
+                
+                if coverage_ratio > 0.60:
+                    is_duplicate = True
+                    logger.debug(f"Removing duplicate text block (coverage={coverage_ratio:.2f} in table)")
+                    break
+            
+            if not is_duplicate:
+                deduplicated_blocks.append(text_block)
+        
+        # Add all table blocks
+        deduplicated_blocks.extend(table_blocks)
+        
+        return deduplicated_blocks
+
     def _open_documents(self, file_path: str) -> Tuple[Optional[Any], Optional[Any], List[str]]:
+        """Open PDF documents with proper error handling."""
         file_warnings: List[str] = []
+        doc = None
+        plumber_pdf = None
+        
         try:
             doc = fitz.open(file_path)
         except Exception as e:
             file_warnings.append(f'fitz open failed: {e}')
             return None, None, file_warnings
-        plumber_pdf: Optional[Any] = None
+        
         if self.extract_tables:
             try:
                 plumber_pdf = pdfplumber.open(file_path)
             except Exception as e:
                 file_warnings.append(f'pdfplumber open failed: {e}')
                 plumber_pdf = None
+                # Don't close doc here - let caller handle cleanup
+        
         return doc, plumber_pdf, file_warnings
 
     def assign_table_captions(self, table_objs: List[TableSchema], file_path: str) -> None:
@@ -415,200 +502,251 @@ class PDFLoader:
             logger.warning(f"Caption assignment failed: {e}")
 
     def load_pdf(self, file_path: str) -> PDFDocument:
+        """
+        Load PDF with proper resource management and cleanup.
+        Ensures all file handles are properly closed even on error.
+        """
         pages: List[PDFPage] = []
         doc_id = os.path.basename(file_path)
-        doc_title, page_labels, meta, num_pages = PDFDocument.extract_metadata(file_path)
-        
-        # Thêm doc_id và thông tin quan trọng vào document metadata
-        # Tạo meta dict mới với thông tin cần thiết
-        if meta is None:
-            meta_dict = {}
-        else:
-            meta_dict = {str(k): str(v) for k, v in meta.items()}
-        
-        meta_dict['doc_id'] = doc_id
-        meta_dict['doc_title'] = doc_title or ''
-        meta_dict['file_path'] = file_path
-        meta_dict['num_pages'] = str(num_pages)
-        meta = meta_dict
-        
-        doc, plumber_pdf, file_warnings = self._open_documents(file_path)
-        if doc is None:
-            return PDFDocument(
-                file_path=file_path,
-                num_pages=num_pages,
-                meta=meta,
-                pages=[],
-                warnings=file_warnings
-            )
-        # Use Text class for text extraction
-        all_blocks = Text.collect_all_blocks(doc)
-        block_hash_counter = Text.build_block_hash_counter(all_blocks)
-        
-        # Không normalize, chỉ trả về block thô, nhưng luôn trích xuất bảng nếu extract_tables
-        for page_idx in range(doc.page_count):
-            page = doc.load_page(page_idx)
-            
-            # Keep original blocks for caption extraction (before merging/filtering)
-            original_blocks = all_blocks[page_idx] if all_blocks and page_idx < len(all_blocks) else []
-            
-            # Extract text blocks using Text class
-            text_config = {
-                'enable_block_merging': self.enable_block_merging,
-                'min_block_length': self.min_block_length,
-                'enable_repeated_block_filter': self.enable_repeated_block_filter,
-                'repeated_block_threshold': self.repeated_block_threshold,
-                'min_text_length': self.min_text_length
-            }
-            
-            blocks = []
-            if self.extract_text:
-                blocks = Text.extract_text_blocks_for_page(
-                    doc=doc,
-                    page_idx=page_idx,
-                    all_blocks=all_blocks,
-                    block_hash_counter=block_hash_counter,
-                    config=text_config
-                )
-                
-                # Normalize blocks: set stable_id, content_sha256, and optionally sentences
-                if self.enable_block_normalization and blocks:
-                    for block in blocks:
-                        # Set stable_id and content_sha256
-                        block.set_stable_id_and_hash(doc_id, page_idx + 1)
-                        
-                        # Optionally perform full normalization (includes sentence segmentation)
-                        if self.enable_sentence_segmentation:
-                            try:
-                                block.normalize()
-                            except Exception as e:
-                                logger.warning(f"Block normalization failed on page {page_idx+1}: {e}")
-            
-            page_meta = {
-                "file_path": file_path,
-                "page_number": page_idx + 1,
-                "doc_id": doc_id,
-                "doc_title": doc_title,
-                "page_label": page_labels.get(page_idx) if isinstance(page_labels, dict) else None,
-                "page_size": {"width": float(page.rect.width), "height": float(page.rect.height)},
-            }
-            tables = []
-            if self.extract_tables:
-                try:
-                    raw_tables = self._extract_tables_for_page(file_path, page_idx + 1, plumber_pdf)
-                    # raw_tables is now List[Dict[str, Any]] with 'matrix' and 'bbox'
-                    # Clean tables: remove header/footer, empty rows/cols, duplicates
-                    # BUT keep track of which tables were kept to preserve bbox mapping
-                    from loaders.normalizers.table_utils import clean_table
-                    tables = []
-                    for raw_table in raw_tables:
-                        matrix = raw_table.get('matrix', raw_table) if isinstance(raw_table, dict) else raw_table
-                        bbox = raw_table.get('bbox') if isinstance(raw_table, dict) else None
-                        
-                        # Clean individual table
-                        cleaned_matrix = clean_table(matrix)
-                        if cleaned_matrix:  # Only keep if not filtered out
-                            tables.append({'matrix': cleaned_matrix, 'bbox': bbox})
-                    
-                    # Also filter duplicates across all tables
-                    if len(tables) > 1:
-                        from loaders.normalizers.table_utils import filter_duplicate_tables
-                        matrices_only = [t['matrix'] for t in tables]
-                        unique_matrices = filter_duplicate_tables(matrices_only)
-                        # Rebuild with original bboxes for unique tables
-                        unique_tables = []
-                        for unique_mat in unique_matrices:
-                            for table_dict in tables:
-                                if table_dict['matrix'] == unique_mat:
-                                    unique_tables.append(table_dict)
-                                    break
-                        tables = unique_tables
-                except Exception as e:
-                    logger.warning(f"Table extraction failed for page {page_idx+1}: {e}")
-            
-            # Convert tables to TableBlocks and add to blocks
-            if tables:
-                from .model.block import TableBlock
-                # Get next page blocks for cross-page caption search
-                next_page_blocks = None
-                page_height = page_meta.get('page_size', {}).get('height')
-                if page_idx + 1 < doc.page_count:
-                    next_page_blocks = all_blocks[page_idx + 1] if all_blocks and page_idx + 1 < len(all_blocks) else None
-                
-                for table_dict in tables:
-                    matrix = table_dict.get('matrix', [])
-                    bbox = table_dict.get('bbox')
-                    if matrix:
-                        # Create TableSchema from matrix
-                        table_obj = TableSchema.from_matrix(matrix, file_path=file_path, page_number=page_idx + 1, bbox=bbox)
-                        
-                        # Try to extract table caption using ORIGINAL blocks (before merging)
-                        # Also check next page if table is at bottom
-                        caption = self._extract_table_caption(page, bbox, original_blocks, next_page_blocks, page_height)
-                        if caption:
-                            if table_obj.metadata is None:
-                                logger.debug(f"Page {page_idx+1}: metadata was None, initializing")
-                                table_obj.metadata = {}
-                            table_obj.metadata['table_caption'] = caption
-                            logger.debug(f"Extracted caption for table on page {page_idx+1}: {caption}")
-                            logger.debug(f"  Metadata after assignment: {table_obj.metadata}")
-                        
-                        # Create TableBlock with text representation
-                        # Generate text from table for chunking/filtering
-                        table_text_lines = []
-                        if table_obj.header:
-                            table_text_lines.append(" | ".join(str(h) for h in table_obj.header))
-                        for row in table_obj.rows:
-                            if hasattr(row, "cells"):
-                                row_text = " | ".join(str(c.value) for c in row.cells)
-                                table_text_lines.append(row_text)
-                        table_text = "\n".join(table_text_lines)
-                        
-                        table_block = TableBlock(
-                            text=table_text,  # Text representation for chunking
-                            bbox=bbox,
-                            table=table_obj,
-                                metadata={
-                                    'doc_id': doc_id,
-                                    'page_number': page_idx + 1,
-                                    'block_type': 'table',
-                                    'table_schema': table_obj if table_obj else None
-                                }
-                        )
-                        
-                        # Add to blocks list
-                        blocks.append(table_block)
-            
-            pages.append(PDFPage(
-                page_number=page_idx + 1,
-                text="",  # text sẽ được tạo trong xử lý nếu cần
-                blocks=blocks,
-                tables=[],  # Không lưu tables riêng biệt nữa
-                warnings=[],
-                source=page_meta,
-            ))
-        # Tables đã được tích hợp vào blocks dưới dạng TableBlock, không cần xử lý riêng
+        doc = None
+        plumber_pdf = None
+        file_warnings: List[str] = []
         
         try:
-            if plumber_pdf is not None:
-                plumber_pdf.close()
-        except Exception:
-            pass
-        # Đảm bảo meta luôn có doc_id
-        if not isinstance(meta, dict) or 'doc_id' not in meta:
-            if not isinstance(meta, dict):
-                meta = {}
-            meta['doc_id'] = doc_id
-            meta['file_path'] = file_path
+            # Extract metadata
+            doc_title, page_labels, meta, num_pages = PDFDocument.extract_metadata(file_path)
             
-        return PDFDocument(
-            file_path=file_path,
-            num_pages=num_pages if num_pages else doc.page_count,
-            meta=meta,
-            pages=pages,
-            warnings=file_warnings,
-            repeated_block_hashes=set()
-        )
+            # Prepare metadata
+            if meta is None:
+                meta_dict = {}
+            else:
+                meta_dict = {str(k): str(v) for k, v in meta.items()}
+            
+            meta_dict['doc_id'] = doc_id
+            meta_dict['doc_title'] = doc_title or ''
+            meta_dict['file_path'] = file_path
+            meta_dict['num_pages'] = str(num_pages)
+            meta = meta_dict
+            
+            # Open documents
+            doc, plumber_pdf, open_warnings = self._open_documents(file_path)
+            file_warnings.extend(open_warnings)
+            
+            if doc is None:
+                logger.warning(f"Failed to open PDF: {file_path}")
+                return PDFDocument(
+                    file_path=file_path,
+                    num_pages=num_pages,
+                    meta=meta,
+                    pages=[],
+                    warnings=file_warnings
+                )
+            
+            # Extract all blocks for the document
+            try:
+                all_blocks = Text.collect_all_blocks(doc)
+                block_hash_counter = Text.build_block_hash_counter(all_blocks)
+            except Exception as e:
+                logger.warning(f"Failed to collect blocks: {e}")
+                file_warnings.append(f"Block collection failed: {e}")
+                all_blocks = None
+                block_hash_counter = None
+            
+            # Process each page
+            for page_idx in range(doc.page_count):
+                try:
+                    page = doc.load_page(page_idx)
+                    
+                    # Keep original blocks for caption extraction
+                    original_blocks = all_blocks[page_idx] if all_blocks and page_idx < len(all_blocks) else []
+                    
+                    # Extract text blocks
+                    blocks = []
+                    if self.extract_text and all_blocks is not None and block_hash_counter is not None:
+                        text_config = {
+                            'enable_block_merging': self.enable_block_merging,
+                            'min_block_length': self.min_block_length,
+                            'enable_repeated_block_filter': self.enable_repeated_block_filter,
+                            'repeated_block_threshold': self.repeated_block_threshold,
+                            'min_text_length': self.min_text_length
+                        }
+                        
+                        blocks = Text.extract_text_blocks_for_page(
+                            doc=doc,
+                            page_idx=page_idx,
+                            all_blocks=all_blocks,
+                            block_hash_counter=block_hash_counter,
+                            config=text_config
+                        )
+                        
+                        # Normalize blocks
+                        if self.enable_block_normalization and blocks:
+                            for block in blocks:
+                                try:
+                                    block.set_stable_id_and_hash(doc_id, page_idx + 1)
+                                    
+                                    if self.enable_sentence_segmentation:
+                                        block.normalize()
+                                except Exception as e:
+                                    logger.debug(f"Block normalization failed on page {page_idx+1}: {e}")
+                    
+                    page_meta = {
+                        "file_path": file_path,
+                        "page_number": page_idx + 1,
+                        "doc_id": doc_id,
+                        "doc_title": doc_title,
+                        "page_label": page_labels.get(page_idx) if isinstance(page_labels, dict) else None,
+                        "page_size": {"width": float(page.rect.width), "height": float(page.rect.height)},
+                    }
+                    
+                    # Extract tables
+                    tables = []
+                    if self.extract_tables:
+                        try:
+                            raw_tables = self._extract_tables_for_page(file_path, page_idx + 1, plumber_pdf)
+                            
+                            # Clean tables
+                            from loaders.normalizers.table_utils import clean_table, filter_duplicate_tables
+                            tables = []
+                            for raw_table in raw_tables:
+                                matrix = raw_table.get('matrix', raw_table) if isinstance(raw_table, dict) else raw_table
+                                bbox = raw_table.get('bbox') if isinstance(raw_table, dict) else None
+                                
+                                cleaned_matrix = clean_table(matrix)
+                                if cleaned_matrix:
+                                    tables.append({'matrix': cleaned_matrix, 'bbox': bbox})
+                            
+                            # Filter duplicates
+                            if len(tables) > 1:
+                                matrices_only = [t['matrix'] for t in tables]
+                                unique_matrices = filter_duplicate_tables(matrices_only)
+                                unique_tables = []
+                                for unique_mat in unique_matrices:
+                                    for table_dict in tables:
+                                        if table_dict['matrix'] == unique_mat:
+                                            unique_tables.append(table_dict)
+                                            break
+                                tables = unique_tables
+                        except Exception as e:
+                            logger.debug(f"Table extraction error on page {page_idx+1}: {e}")
+                    
+                    # Convert tables to TableBlocks
+                    if tables:
+                        from .model.block import TableBlock
+                        page_height = page_meta.get('page_size', {}).get('height')
+                        next_page_blocks = None
+                        if page_idx + 1 < doc.page_count:
+                            next_page_blocks = all_blocks[page_idx + 1] if all_blocks and page_idx + 1 < len(all_blocks) else None
+                        
+                        for table_dict in tables:
+                            try:
+                                matrix = table_dict.get('matrix', [])
+                                bbox = table_dict.get('bbox')
+                                
+                                if not matrix:
+                                    continue
+                                
+                                table_obj = TableSchema.from_matrix(matrix, file_path=file_path, page_number=page_idx + 1, bbox=bbox)
+                                
+                                # Extract caption
+                                caption = self._extract_table_caption(page, bbox, original_blocks, next_page_blocks, page_height)
+                                if caption:
+                                    if table_obj.metadata is None:
+                                        table_obj.metadata = {}
+                                    table_obj.metadata['table_caption'] = caption
+                                
+                                # Create TableBlock
+                                table_text_lines = []
+                                if table_obj.header:
+                                    table_text_lines.append(" | ".join(str(h) for h in table_obj.header))
+                                for row in table_obj.rows:
+                                    if hasattr(row, "cells"):
+                                        row_text = " | ".join(str(c.value) for c in row.cells)
+                                        table_text_lines.append(row_text)
+                                table_text = "\n".join(table_text_lines)
+                                
+                                table_block = TableBlock(
+                                    text=table_text,
+                                    bbox=bbox,
+                                    table=table_obj,
+                                    metadata={
+                                        'doc_id': doc_id,
+                                        'page_number': page_idx + 1,
+                                        'block_type': 'table',
+                                        'table_schema': table_obj if table_obj else None
+                                    }
+                                )
+                                blocks.append(table_block)
+                            except Exception as e:
+                                logger.debug(f"Table block creation failed on page {page_idx+1}: {e}")
+                    
+                    # Remove text blocks that overlap with tables (prefer structured table data)
+                    if tables:
+                        blocks = self._deduplicate_text_and_tables(blocks)
+                    
+                    pages.append(PDFPage(
+                        page_number=page_idx + 1,
+                        text="",
+                        blocks=blocks,
+                        tables=[],
+                        warnings=[],
+                        source=page_meta,
+                    ))
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing page {page_idx+1}: {e}")
+                    file_warnings.append(f"Page {page_idx+1} processing error: {e}")
+                    pages.append(PDFPage(
+                        page_number=page_idx + 1,
+                        text="",
+                        blocks=[],
+                        tables=[],
+                        warnings=[str(e)],
+                        source={},
+                    ))
+            
+            # Return document
+            if not isinstance(meta, dict) or 'doc_id' not in meta:
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta['doc_id'] = doc_id
+                meta['file_path'] = file_path
+            
+            return PDFDocument(
+                file_path=file_path,
+                num_pages=num_pages if num_pages else doc.page_count,
+                meta=meta,
+                pages=pages,
+                warnings=file_warnings,
+                repeated_block_hashes=set()
+            )
+        
+        except Exception as e:
+            logger.error(f"Critical error loading PDF {file_path}: {e}")
+            return PDFDocument(
+                file_path=file_path,
+                num_pages=0,
+                meta={'doc_id': doc_id, 'file_path': file_path, 'error': str(e)},
+                pages=[],
+                warnings=[f"Critical error: {e}"]
+            )
+        
+        finally:
+            # Ensure proper cleanup of resources
+            try:
+                if plumber_pdf is not None:
+                    plumber_pdf.close()
+            except Exception as e:
+                logger.debug(f"Error closing pdfplumber: {e}")
+            
+            try:
+                if doc is not None:
+                    doc.close()
+            except Exception as e:
+                logger.debug(f"Error closing fitz document: {e}")
+            
+            # Force garbage collection to prevent memory leaks
+            gc.collect()
 
     def load_directory(self, dir_path: str) -> List[Dict[str, Any]]:
         """Load tất cả PDF files trong một directory."""

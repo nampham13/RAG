@@ -22,9 +22,6 @@ from embedders.providers.ollama import OllamaModelSwitcher, OllamaModelType
 from pipeline.vector_store import VectorStore
 from pipeline.summary_generator import SummaryGenerator
 from pipeline.retriever import Retriever
-from pipeline.data_quality_analyzer import DataQualityAnalyzer
-from pipeline.data_integrity_checker import DataIntegrityChecker
-from pipeline.chunk_cache_manager import ChunkCacheManager
 
 # Configure logging
 logging.basicConfig(
@@ -87,115 +84,6 @@ class RAGPipeline:
         self.vector_store = VectorStore(self.vectors_dir)
         self.summary_generator = SummaryGenerator(self.metadata_dir, self.output_dir)
         self.retriever = Retriever(self.embedder)
-
-        # Initialize specialized components using composition
-        self.quality_analyzer = DataQualityAnalyzer(
-            loader=self.loader,
-            chunker=self.chunker,
-            embedder=self.embedder,
-            output_dir=self.output_dir
-        )
-
-        self.integrity_checker = DataIntegrityChecker(
-            chunks_dir=self.chunks_dir,
-            embeddings_dir=self.embeddings_dir,
-            vectors_dir=self.vectors_dir,
-            metadata_dir=self.metadata_dir
-        )
-
-        self.chunk_cache = ChunkCacheManager(
-            cache_file=self.processed_chunks_cache
-        )
-        
-        logger.info(f"Loader: PDFLoader")
-        logger.info(f"Chunker: HybridChunker")
-        logger.info(f"Embedder: {self.embedder.profile.model_id}")
-        logger.info(f"Dimension: {self.embedder.dimension}")
-        logger.info(f"Output: {self.output_dir}")
-    
-    def is_chunk_processed(self, chunk_id: str, content_hash: str) -> bool:
-        """
-        Check if chunk has already been processed.
-
-        Args:
-            chunk_id: Unique chunk identifier
-            content_hash: Hash of chunk content for verification
-
-        Returns:
-            True if chunk was already processed, False otherwise
-        """
-        return self.chunk_cache.is_chunk_processed(chunk_id, content_hash)
-
-    def mark_chunk_processed(self, chunk_id: str, content_hash: str, metadata: Dict[str, Any]):
-        """
-        Mark chunk as processed and save to cache.
-
-        Args:
-            chunk_id: Unique chunk identifier
-            content_hash: Hash of chunk content
-            metadata: Additional metadata to store
-        """
-        self.chunk_cache.mark_chunk_processed(chunk_id, content_hash, metadata)
-    
-    def analyze_data_quality(self, pdf_path: str | Path) -> Dict[str, Any]:
-        """
-        Analyze data quality throughout the RAG pipeline.
-
-        Args:
-            pdf_path: Path to PDF file
-
-        Returns:
-            Dict with quality analysis results
-        """
-        return self.quality_analyzer.analyze_data_quality(pdf_path)
-
-    def save_quality_report(self, quality_report: Dict[str, Any], output_path: Optional[str | Path] = None) -> Path:
-        """
-        Save quality analysis report to JSON file.
-
-        Args:
-            quality_report: Quality analysis results
-            output_path: Optional output path, defaults to data/quality_reports/
-
-        Returns:
-            Path to saved report file
-        """
-        return self.quality_analyzer.save_quality_report(quality_report, output_path)
-
-    def compare_quality_reports(self, report1: Dict[str, Any], report2: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Compare two quality reports and show differences.
-
-        Args:
-            report1: First quality report
-            report2: Second quality report
-
-        Returns:
-            Dict with comparison results
-        """
-        return self.quality_analyzer.compare_quality_reports(report1, report2)
-    
-    def check_data_integrity(self, pdf_path: str | Path, 
-                           chunks_file: Optional[str | Path] = None,
-                           embeddings_file: Optional[str | Path] = None,
-                           faiss_index_file: Optional[str | Path] = None,
-                           metadata_file: Optional[str | Path] = None) -> Dict[str, Any]:
-        """
-        Check data integrity across all pipeline outputs.
-        
-        Args:
-            pdf_path: Path to original PDF file
-            chunks_file: Path to chunks file (auto-detect if None)
-            embeddings_file: Path to embeddings file (auto-detect if None)
-            faiss_index_file: Path to FAISS index file (auto-detect if None)
-            metadata_file: Path to metadata file (auto-detect if None)
-            
-        Returns:
-            Dict with integrity check results
-        """
-        return self.integrity_checker.check_data_integrity(
-            pdf_path, chunks_file, embeddings_file, faiss_index_file, metadata_file
-        )
     
     def switch_model(self, model_type: OllamaModelType) -> None:
         """
@@ -273,17 +161,6 @@ class RAGPipeline:
             # Create content hash for duplicate checking
             content_hash = hashlib.md5(chunk.text.encode('utf-8')).hexdigest()
             
-            # Check if chunk already processed
-            if self.is_chunk_processed(chunk.chunk_id, content_hash):
-                logger.info(f"Skipping already processed chunk {idx}/{len(chunk_set.chunks)}: {chunk.chunk_id}")
-                skipped_chunks += 1
-                
-                # Update progress via callback even for skipped chunks
-                if chunk_callback:
-                    chunk_callback(idx, total_chunks)
-                
-                continue
-            
             # Test connection on first chunk
             if idx == 1 and not self.embedder.test_connection():
                 raise ConnectionError("Cannot connect to Ollama server!")
@@ -342,14 +219,7 @@ class RAGPipeline:
                     }
             
             embeddings_data.append(chunk_embedding)
-            
-            # Mark chunk as processed
-            self.mark_chunk_processed(chunk.chunk_id, content_hash, {
-                'page_number': chunk_embedding['page_number'],
-                'token_count': chunk.token_count,
-                'is_table': chunk_embedding['is_table']
-            })
-            
+
             # Update progress via callback
             if chunk_callback:
                 chunk_callback(idx, total_chunks)

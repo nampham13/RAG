@@ -15,7 +15,7 @@ from chat_handler import build_messages
 from LLM_API import call_gemini_with_timing
 from LLM_LOCAL import call_lmstudio_with_timing
 from config_loader import ui_default_backend, paths_data_dir
-from pipeline.pipeline_qa import fetch_retrieval
+from pipeline.pipeline_qa import RAGRetrievalService, fetch_retrieval
 from pipeline.document_processor import DocumentProcessor
 from embedders.providers.ollama import OllamaModelType
 
@@ -189,9 +189,27 @@ with st.sidebar:
             
             process_documents_in_background()
             st.rerun()
-
-    if not st.session_state["is_processing"] and unprocessed_count == 0:
-        st.info("All documents processed")
+    # In the sidebar where you have the Process Documents button, add:
+    if st.button("🔍 Debug Metadata"):
+        import pickle
+        from pipeline.rag_pipeline import RAGPipeline
+        pipeline = RAGPipeline()
+        retriever = RAGRetrievalService(pipeline)
+        index_pairs = retriever.get_all_index_pairs()
+        
+        if index_pairs:
+            _, metadata_file = index_pairs[0]
+            with open(metadata_file, 'rb') as f:
+                metadata_map = pickle.load(f)
+            
+            st.write(f"Total entries: {len(metadata_map)}")
+            for i in range(min(3, len(metadata_map))):
+                entry = metadata_map[i]
+                st.write(f"Entry {i}:")
+                st.write(f"  - text length: {len(entry.get('text', ''))}")
+                st.write(f"  - text preview: {entry.get('text', '')[:200]}")
+        if not st.session_state["is_processing"] and unprocessed_count == 0:
+            st.info("All documents processed")
     st.markdown("---")
 
     # === BACKEND SELECTION ===
@@ -267,8 +285,12 @@ if sources:
             score = float(src.get("similarity_score", 0.0))
         except Exception:
             score = 0.0
-        text = src.get("snippet", "") or ""
-        snippet = text
+
+        import logging
+        logger = logging.getLogger(__name__)
+        # Get the full text without any truncation
+        snippet = src.get("snippet", "") or src.get("text", "")
+        logger.info(f"Source {i}: snippet length = {len(snippet)}, first 100 chars = {snippet[:100]}")
         
         st.markdown(f"- [{i}] {file_name} - trang {page} (điểm {score:.3f})")
         with st.expander(f"Xem trích đoạn {i}"):

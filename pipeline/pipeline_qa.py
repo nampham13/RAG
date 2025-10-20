@@ -164,12 +164,14 @@ class RAGRetrievalService:
             score = float(r.get("similarity_score", 0.0))
             dist = float(r.get("distance", 0.0))
             text = r.get("text", "") or ""
+            logger.info(f"DEBUG to_ui_items: text length from results = {len(text)}, first 100 chars = {text[:100]}")
             # no truncate
             snippet = text
             ui_items.append(
                 {
                     "title": f"{file_name} - trang {page}",
                     "snippet": snippet,
+                    "text": text,
                     "file_name": file_name,
                     "page_number": page,
                     "similarity_score": round(score, 4),
@@ -177,7 +179,6 @@ class RAGRetrievalService:
                 }
             )
         return ui_items
-
 
 def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> Dict[str, Any]:
     """
@@ -212,7 +213,7 @@ def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> D
                     faiss_file=faiss_file,
                     metadata_map_file=metadata_file,
                     query_text=query_text,
-                    top_k=top_k * 2  # Lấy nhiều hơn để có thể chọn top-k tốt nhất
+                    top_k=top_k * 2
                 )
                 all_results.extend(results)
             except Exception as e:
@@ -226,8 +227,7 @@ def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> D
         # Build context
         context = retriever.build_context(top_results, max_chars=max_chars)
 
-        # Convert to UI format
-        sources = retriever.to_ui_items(top_results)
+        sources = top_results
 
         return {
             "context": context,

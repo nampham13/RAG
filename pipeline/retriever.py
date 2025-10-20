@@ -64,14 +64,32 @@ class Retriever:
         else:
             softmax_scores = None
 
-        # Format results (similarities are already cosine similarities for normalized vectors)
+# Format results (similarities are already cosine similarities for normalized vectors)
+        import logging
+        logger = logging.getLogger(__name__)
+
         results = []
         for i, (idx, similarity) in enumerate(zip(indices[0], similarities[0])):
             if idx >= 0 and idx < len(metadata_map):
-                result = metadata_map[idx].copy()
-                result["cosine_similarity"] = float(similarity)
-                result["distance"] = 1.0 - float(similarity)
-                result["similarity_score"] = float(similarity)
+                # Get metadata entry - DON'T use .copy() yet
+                metadata_entry = metadata_map[idx]
+                
+                # DEBUG: Check what's in metadata_map BEFORE copying
+                text_in_metadata = metadata_entry.get("text", "")
+                logger.info(f"DEBUG retriever BEFORE copy: idx={idx}, text length = {len(text_in_metadata)}, first 100 chars = {text_in_metadata[:100]}")
+                
+                # Create result dict manually to ensure text is preserved
+                result = {
+                    "text": text_in_metadata,  # EXPLICITLY set text first
+                    "cosine_similarity": float(similarity),
+                    "distance": 1.0 - float(similarity),
+                    "similarity_score": float(similarity)
+                }
+                
+                # Add other metadata fields
+                for key, value in metadata_entry.items():
+                    if key not in result:  # Don't overwrite what we already set
+                        result[key] = value
                 
                 if use_softmax and softmax_scores is not None:
                     result["softmax_score"] = float(softmax_scores[i])
