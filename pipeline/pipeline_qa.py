@@ -5,8 +5,8 @@ Module chỉ phụ trách phần Retrieval (FAISS search) để UI có thể hi�
 và/hoặc tự ghép context vào prompt. Không gọi LLM tại đây.
 
 Sử dụng nhanh:
-    from pipeline.rag_pipeline import RAGPipeline
-    from pipeline.rag_qa_engine import RAGRetrievalService
+    from RAG_system.pipeline.rag_pipeline import RAGPipeline
+    from RAG_system.pipeline.rag_qa_engine import RAGRetrievalService
 
     pipeline = RAGPipeline(output_dir="data")
     retriever = RAGRetrievalService(pipeline)
@@ -49,26 +49,26 @@ class RAGRetrievalService:
         candidate = self.pipeline.vectors_dir / name.replace("_vectors_", "_metadata_map_").replace(".faiss", ".pkl")
         return candidate if candidate.exists() else None
 
-    def get_latest_index_pair(self) -> Optional[Tuple[Path, Path]]:
+    def get_all_index_pairs(self) -> List[Tuple[Path, Path]]:
         """
-        Lấy cặp (faiss_index, metadata_map) mới nhất trong thư mục vectors.
-        Bỏ qua các file FAISS bị hỏng và thử file tiếp theo.
-        Trả về None nếu không tìm thấy file hợp lệ.
+        Lấy tất cả cặp (faiss_index, metadata_map) hợp lệ trong thư mục vectors.
+        Trả về list các cặp, không chỉ latest.
         """
-        faiss_files = sorted(
-            self.pipeline.vectors_dir.glob("*_vectors_*.faiss"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
+        index_pairs = []
+        faiss_files = list(self.pipeline.vectors_dir.glob("*_vectors_*.faiss"))
+
         for vf in faiss_files:
             mf = self._match_metadata_for_vectors(vf)
-            if mf is not None:
+            if mf is not None and mf.exists():
                 # Test if FAISS file can be loaded
                 if self._test_faiss_file(vf):
-                    return vf, mf
+                    index_pairs.append((vf, mf))
                 else:
                     logger.warning(f"Skipping corrupted FAISS file: {vf}")
-        return None
+
+        # Sort by modification time (newest first)
+        index_pairs.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
+        return index_pairs
 
     def _test_faiss_file(self, faiss_file: Path) -> bool:
         """
@@ -101,13 +101,16 @@ class RAGRetrievalService:
         except Exception as e:
             logger.error(f"Failed to cleanup corrupted files: {e}")
 
-    def build_context(self, results: List[Dict[str, Any]], max_chars: int = 4000) -> str:
+    def build_context(self, results: List[Dict[str, Any]], max_chars: int = 8000) -> str:
         """
         Tạo chuỗi context gọn từ danh sách kết quả retrieval (top-k).
         Sử dụng provenance information để tạo source attribution chi tiết hơn.
+        Cắt ngắn mỗi chunk để đảm bảo có chỗ cho nhiều sources.
         """
         parts: List[str] = []
         total = 0
+        max_per_chunk = max_chars  # Don't limit per chunk, use full max_chars
+        
         for i, r in enumerate(results, 1):
             file_name = r.get("file_name", "?")
             page = r.get("page_number", "?")
@@ -149,31 +152,7 @@ class RAGRetrievalService:
                 break
         return "\n\n".join(parts)
 
-    def retrieve(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Trả về danh sách kết quả giống với retriever (metadata + similarity_score).
-        Nếu không có index hoặc embedder không sẵn sàng, trả về list rỗng.
-        """
-        try:
-            pair = self.get_latest_index_pair()
-            if pair is None:
-                logger.info("Không tìm thấy index trong thư mục vectors.")
-                return []
-            if not self.pipeline.embedder.test_connection():
-                logger.warning("Embedder (Ollama) chưa sẵn sàng; bỏ qua retrieval.")
-                return []
-            faiss_file, metadata_map_file = pair
-            return self.pipeline.search_similar(
-                faiss_file=faiss_file,
-                metadata_map_file=metadata_map_file,
-                query_text=query_text,
-                top_k=top_k,
-            )
-        except Exception as e:
-            logger.error(f"Retrieval error: {e}")
-            return []
-
-    def to_ui_items(self, results: List[Dict[str, Any]], max_text_len: int = 500) -> List[Dict[str, Any]]:
+    def to_ui_items(self, results: List[Dict[str, Any]], max_text_len: int = 3000) -> List[Dict[str, Any]]:
         """
         Chuyển danh sách kết quả sang dạng dễ hiển thị ở UI.
         Mỗi item gồm: title, snippet, file_name, page_number, similarity_score, distance.
@@ -185,11 +164,14 @@ class RAGRetrievalService:
             score = float(r.get("similarity_score", 0.0))
             dist = float(r.get("distance", 0.0))
             text = r.get("text", "") or ""
-            snippet = (text[: max_text_len - 3] + "...") if len(text) > max_text_len else text
+            logger.info(f"DEBUG to_ui_items: text length from results = {len(text)}, first 100 chars = {text[:100]}")
+            # no truncate
+            snippet = text
             ui_items.append(
                 {
                     "title": f"{file_name} - trang {page}",
                     "snippet": snippet,
+                    "text": text,
                     "file_name": file_name,
                     "page_number": page,
                     "similarity_score": round(score, 4),
@@ -197,20 +179,217 @@ class RAGRetrievalService:
                 }
             )
         return ui_items
+    
+    def adaptive_retrieve(self, query_text: str, llm_callable=None, 
+                        max_chars: int = 8000) -> Dict[str, Any]:
+        """
+        Adaptive retrieval based on query complexity.
+        
+        Args:
+            query_text: User query
+            llm_callable: Optional LLM callable for query classification
+            max_chars: Max characters for context
+            
+        Returns:
+            Dict with context, sources, and routing info
+        """
+        from pipeline.query_router import QueryRouter
+        
+        # Analyze query
+        router = QueryRouter(llm_callable=llm_callable)
+        analysis = router.analyze_query(query_text)
+        
+        logger.info(f"Query routing: {analysis.query_type} (confidence: {analysis.confidence:.2f})")
+        logger.info(f"Reasoning: {analysis.reasoning}")
+        
+        # Route based on query type
+        if not analysis.requires_retrieval:
+            return {
+                "context": "",
+                "sources": [],
+                "routing_info": {
+                    "query_type": analysis.query_type,
+                    "reasoning": analysis.reasoning,
+                    "retrieval_used": False
+                }
+            }
+        
+        # Get all index pairs
+        index_pairs = self.get_all_index_pairs()
+        if not index_pairs:
+            logger.warning("No FAISS indexes found")
+            return {
+                "context": "",
+                "sources": [],
+                "routing_info": {
+                    "query_type": analysis.query_type,
+                    "reasoning": "No indexes available",
+                    "retrieval_used": False
+                }
+            }
+        
+        # Execute retrieval based on query type
+        if analysis.query_type == "simple_factual":
+            results = self._simple_retrieval(query_text, index_pairs, analysis.suggested_top_k)
+        else:  # complex_analytical
+            results = self._complex_retrieval(query_text, index_pairs, analysis.suggested_top_k)
+        
+        # Build context
+        context = self.build_context(results, max_chars=max_chars)
+        
+        return {
+            "context": context,
+            "sources": results,
+            "routing_info": {
+                "query_type": analysis.query_type,
+                "reasoning": analysis.reasoning,
+                "retrieval_used": True,
+                "num_sources": len(results),
+                "top_k": analysis.suggested_top_k
+            }
+        }
 
+    def _simple_retrieval(self, query_text: str, index_pairs: list, 
+                        top_k: int) -> list:
+        """Single-step retrieval for simple factual queries"""
+        all_results = []
+        
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = self.pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=query_text,
+                    top_k=top_k
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Error searching in {faiss_file}: {e}")
+                continue
+        
+        # Sort by similarity and return top-k
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        return all_results[:top_k]
 
-def fetch_retrieval(
-    query_text: str,
-    pipeline: Optional[RAGPipeline] = None,
-    top_k: int = 5,
-    max_chars: int = 4000,
-) -> Dict[str, Any]:
+    def _complex_retrieval(self, query_text: str, index_pairs: list, 
+                        top_k: int) -> list:
+        """Multi-step iterative retrieval for complex analytical queries"""
+        
+        # Step 1: Initial broad retrieval
+        initial_k = min(top_k * 2, 30)
+        all_results = []
+        
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = self.pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=query_text,
+                    top_k=initial_k
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Error searching in {faiss_file}: {e}")
+                continue
+        
+        # Sort by similarity
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        
+        # Step 2: Diversity filtering - ensure multiple sources/pages
+        diverse_results = self._diversify_results(all_results, top_k)
+        
+        logger.info(f"Complex retrieval: {len(all_results)} initial → {len(diverse_results)} diverse results")
+        
+        return diverse_results
+
+    def _diversify_results(self, results: list, target_k: int) -> list:
+        """
+        Ensure diversity in results by including chunks from different sources/pages.
+        Helps with complex queries that may need broader context.
+        """
+        if not results:
+            return []
+        
+        diverse = []
+        seen_sources = set()
+        
+        # First pass: one result per unique (file, page) combination
+        for result in results:
+            file_name = result.get("file_name", "")
+            page = result.get("page_number", 0)
+            source_key = f"{file_name}:{page}"
+            
+            if source_key not in seen_sources:
+                diverse.append(result)
+                seen_sources.add(source_key)
+                
+                if len(diverse) >= target_k:
+                    break
+        
+        # Second pass: fill remaining slots with high-scoring duplicates
+        if len(diverse) < target_k:
+            for result in results:
+                if result not in diverse:
+                    diverse.append(result)
+                    if len(diverse) >= target_k:
+                        break
+        
+        return diverse
+
+def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> Dict[str, Any]:
     """
-    Tiện ích một hàm: thực hiện retrieval và trả về {context, sources} cho UI.
+    Hàm tiện ích để retrieval từ FAISS indexes.
+    Tự động tìm FAISS index mới nhất và thực hiện search.
+
+    Args:
+        query_text: Câu hỏi cần tìm
+        top_k: Số lượng kết quả trả về
+        max_chars: Độ dài tối đa của context
+
+    Returns:
+        Dict với keys: "context" (str), "sources" (list)
     """
-    if pipeline is None:
-        pipeline = RAGPipeline(output_dir="data")
-    service = RAGRetrievalService(pipeline)
-    results = service.retrieve(query_text=query_text, top_k=top_k)
-    context = service.build_context(results, max_chars=max_chars) if results else ""
-    return {"context": context, "sources": results}
+    try:
+        # Khởi tạo pipeline và retriever
+        from pipeline.rag_pipeline import RAGPipeline
+        pipeline = RAGPipeline()
+        retriever = RAGRetrievalService(pipeline)
+
+        # Lấy tất cả cặp FAISS indexes hợp lệ
+        index_pairs = retriever.get_all_index_pairs()
+        if not index_pairs:
+            logger.warning("Không tìm thấy FAISS index nào")
+            return {"context": "", "sources": []}
+
+        # Search across tất cả indexes và combine results
+        all_results = []
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=query_text,
+                    top_k=top_k * 2
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Lỗi khi search trong {faiss_file}: {e}")
+                continue
+
+        # Sort tất cả results by similarity score và lấy top-k
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        top_results = all_results[:top_k]
+
+        # Build context
+        context = retriever.build_context(top_results, max_chars=max_chars)
+
+        sources = top_results
+
+        return {
+            "context": context,
+            "sources": sources
+        }
+
+    except Exception as e:
+        logger.error(f"Lỗi trong fetch_retrieval: {e}")
+        return {"context": "", "sources": []}

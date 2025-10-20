@@ -1,4 +1,5 @@
 import sys, os
+from typing import Any, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pathlib import Path
@@ -8,13 +9,15 @@ import shutil
 import threading
 import queue
 import time
+import logging
+logger = logging.getLogger(__name__)
 
 # Import your custom modules
 from chat_handler import build_messages
 from LLM_API import call_gemini_with_timing
 from LLM_LOCAL import call_lmstudio_with_timing
 from config_loader import ui_default_backend, paths_data_dir
-from pipeline.pipeline_qa import fetch_retrieval
+from pipeline.pipeline_qa import RAGRetrievalService, fetch_retrieval
 from pipeline.document_processor import DocumentProcessor
 from embedders.providers.ollama import OllamaModelType
 
@@ -188,9 +191,27 @@ with st.sidebar:
             
             process_documents_in_background()
             st.rerun()
-
-    if not st.session_state["is_processing"] and unprocessed_count == 0:
-        st.info("All documents processed")
+    # In the sidebar where you have the Process Documents button, add:
+    if st.button("🔍 Debug Metadata"):
+        import pickle
+        from pipeline.rag_pipeline import RAGPipeline
+        pipeline = RAGPipeline()
+        retriever = RAGRetrievalService(pipeline)
+        index_pairs = retriever.get_all_index_pairs()
+        
+        if index_pairs:
+            _, metadata_file = index_pairs[0]
+            with open(metadata_file, 'rb') as f:
+                metadata_map = pickle.load(f)
+            
+            st.write(f"Total entries: {len(metadata_map)}")
+            for i in range(min(3, len(metadata_map))):
+                entry = metadata_map[i]
+                st.write(f"Entry {i}:")
+                st.write(f"  - text length: {len(entry.get('text', ''))}")
+                st.write(f"  - text preview: {entry.get('text', '')[:200]}")
+        if not st.session_state["is_processing"] and unprocessed_count == 0:
+            st.info("All documents processed")
     st.markdown("---")
 
     # === BACKEND SELECTION ===
@@ -210,6 +231,7 @@ with st.sidebar:
     st.markdown("Welcome back", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
+backend = st.session_state["backend_mode"]
 
 # === SESSION STATE INIT for Chat ===
 if "messages" not in st.session_state:
@@ -243,35 +265,139 @@ if st.session_state.get("is_generating"):
 chat_html_parts.append("</div>")
 st.markdown("".join(chat_html_parts), unsafe_allow_html=True)
 
-# Display retrieval sources
-if st.session_state.get("last_sources"):
+# === RETRIEVAL SOURCES (UI) ===
+sources = st.session_state.get("last_sources", [])
+if sources:
     st.markdown("### Nguồn tham khảo")
-    for i, src in enumerate(st.session_state["last_sources"], 1):
-        file_name, page, score, text = src.get("file_name", "?"), src.get("page_number", "?"), float(src.get("similarity_score", 0.0)), src.get("text", "")
-        snippet = text[:300] + "..." if len(text) > 300 else text
+    for i, src in enumerate(sources, 1):
+        file_name = src.get("file_name", "?")
+        
+        # Fix: Try multiple keys for page number
+        page = src.get("page_number")
+        if page is None:
+            # Fallback to page_numbers list if page_number is None
+            page_numbers = src.get("page_numbers", [])
+            if page_numbers:
+                page = page_numbers[0]  # Get first page from list
+            else:
+                page = "?"
+        
+        try:
+            score = float(src.get("similarity_score", 0.0))
+        except Exception:
+            score = 0.0
+
+        # Get the full text without any truncation
+        snippet = src.get("snippet", "") or src.get("text", "")
+        logger.info(f"Source {i}: snippet length = {len(snippet)}, first 100 chars = {snippet[:100]}")
+        
         st.markdown(f"- [{i}] {file_name} - trang {page} (điểm {score:.3f})")
         with st.expander(f"Xem trích đoạn {i}"):
-            st.markdown(snippet)
+            if snippet.strip():
+                st.markdown(snippet)
+            else:
+                st.write("Không có nội dung trích đoạn")
+else:
+    st.info("Chưa có nguồn tham khảo nào được tìm thấy. Hãy đặt câu hỏi để hệ thống tìm kiếm tài liệu liên quan.")
 
+# === ROUTING INFO DISPLAY ===
+routing_info = st.session_state.get("last_routing_info", {})
+if routing_info:
+    with st.expander("🎯 Query Routing Info"):
+        query_type = routing_info.get("query_type", "unknown")
+        reasoning = routing_info.get("reasoning", "N/A")
+        retrieval_used = routing_info.get("retrieval_used", False)
+        
+        # Color-code query types
+        type_colors = {
+            "simple_factual": "🟢",
+            "complex_analytical": "🔵", 
+            "general_conversation": "⚪"
+        }
+        icon = type_colors.get(query_type, "❓")
+        
+        st.markdown(f"**Query Type:** {icon} {query_type}")
+        st.markdown(f"**Reasoning:** {reasoning}")
+        st.markdown(f"**Retrieval Used:** {'✅ Yes' if retrieval_used else '❌ No'}")
+        
+        if retrieval_used:
+            num_sources = routing_info.get("num_sources", 0)
+            top_k = routing_info.get("top_k", 0)
+            st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
 
-# === BACKEND CALL LOGIC ===
-def ask_backend(prompt_text: str) -> dict:
+def ask_backend(prompt_text: str) -> Dict[str, Any]:
+    """
+    Xử lý request tới LLM backend với adaptive retrieval
+    
+    Args:
+        prompt_text: User query
+    
+    Returns:
+        Response từ LLM
+    """
     try:
-        ret = fetch_retrieval(prompt_text, top_k=15, max_chars=4000)
-        context = ret.get("context", "")
-        st.session_state["last_sources"] = ret.get("sources", [])
-    except Exception as e:
-        st.error(f"Error fetching retrieval context: {e}")
         context = ""
-        st.session_state["last_sources"] = []
+        
+        # === ADAPTIVE RETRIEVAL ===
+        try:
+            from pipeline.rag_pipeline import RAGPipeline
+            
+            pipeline = RAGPipeline()
+            retriever = RAGRetrievalService(pipeline)
+            
+            # Create LLM callable for query classification
+            def llm_for_routing(messages):
+                if backend == "gemini":
+                    return call_gemini_with_timing(messages)
+                else:
+                    return call_lmstudio_with_timing(messages)
+            
+            # Use adaptive retrieval
+            ret = retriever.adaptive_retrieve(
+                query_text=prompt_text,
+                llm_callable=llm_for_routing,
+                max_chars=8000
+            )
+            
+            context = ret.get("context", "") or ""
+            st.session_state["last_sources"] = ret.get("sources", [])
+            
+            # Store routing info for display
+            routing_info = ret.get("routing_info", {})
+            st.session_state["last_routing_info"] = routing_info
+            
+            logger.info(f"Adaptive routing: {routing_info.get('query_type')} - "
+                       f"Retrieval: {routing_info.get('retrieval_used')}")
+            
+        except Exception as e:
+            logger.error(f"Adaptive retrieval failed: {e}")
+            context = ""
+            st.session_state["last_sources"] = []
+            st.session_state["last_routing_info"] = {}
+        
+        # Build messages
+        messages = build_messages(
+            query=prompt_text,
+            context=context,
+            history=st.session_state["messages"]
+        )
+        
+        # Call LLM
+        if backend == "gemini":
+            reply = call_gemini_with_timing(messages)
+        else:
+            reply = call_lmstudio_with_timing(messages)
+        
+        return reply
     
-    messages = build_messages(query=prompt_text, context=context, history=st.session_state["messages"])
-    
-    try:
-        backend_call = call_gemini_with_timing if st.session_state["backend_mode"] == "gemini" else call_lmstudio_with_timing
-        return backend_call(messages)
     except Exception as e:
-        return {"response": f"[Error calling LLM] {e}", "time_taken": 0, "prompt_tokens": 0, "response_tokens": 0, "total_tokens": 0}
+        return {
+            "response": f"[Error] {e}",
+            "time_taken": 0,
+            "prompt_tokens": 0,
+            "response_tokens": 0,
+            "total_tokens": 0
+        }
 
 # === CHAT INPUT & RESPONSE GENERATION ===
 if prompt := st.chat_input("Type a new message here", disabled=st.session_state["is_generating"]):
@@ -284,7 +410,8 @@ if st.session_state["is_generating"] and st.session_state["pending_prompt"]:
     start_time = time.time()
     result = ask_backend(st.session_state["pending_prompt"])
     total_time = time.time() - start_time  # Calculate total time including retrieval
-    
+    with st.spinner("Assistant is typing..."):
+        result = ask_backend(st.session_state["pending_prompt"])
     st.session_state["messages"].append({
         "role": "assistant",
         "content": result["response"],

@@ -98,13 +98,16 @@ class VectorStore:
     def _create_metadata_map(self, embeddings_data: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         """
         Create metadata mapping for FAISS index.
-
-        Args:
-            embeddings_data: List of embedding dictionaries
-
-        Returns:
-            Dictionary mapping index positions to metadata
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # DEBUG: Check first few items
+        for i in range(min(3, len(embeddings_data))):
+            item = embeddings_data[i]
+            text_len = len(item.get("text", ""))
+            logger.info(f"DEBUG vector_store: embeddings_data[{i}] text length = {text_len}, first 100 chars = {item.get('text', '')[:100]}")
+        
         metadata_map = {}
         for idx, item in enumerate(embeddings_data):
             metadata_map[idx] = {
