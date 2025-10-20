@@ -366,7 +366,7 @@ class RAGPipeline:
         return self.vector_store.load_index(faiss_file, metadata_map_file)
     
     def search_similar(self, faiss_file: Path, metadata_map_file: Path,
-                    query_text: str, top_k: int = 5, use_softmax: bool = True,
+                    query_text: str, top_k: int = 5, use_softmax: bool = False,
                     temperature: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Search for similar chunks using FAISS index.

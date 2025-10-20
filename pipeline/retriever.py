@@ -34,7 +34,7 @@ class Retriever:
         self.temperature = temperature
 
     def search_similar(self, faiss_file: Path, metadata_map_file: Path,
-                    query_text: str, top_k: int = 5, use_softmax: bool = True,
+                    query_text: str, top_k: int = 5, use_softmax: bool = False,
                     temperature: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Search for similar chunks using cosine similarity with FAISS.

@@ -179,6 +179,162 @@ class RAGRetrievalService:
                 }
             )
         return ui_items
+    
+    def adaptive_retrieve(self, query_text: str, llm_callable=None, 
+                        max_chars: int = 8000) -> Dict[str, Any]:
+        """
+        Adaptive retrieval based on query complexity.
+        
+        Args:
+            query_text: User query
+            llm_callable: Optional LLM callable for query classification
+            max_chars: Max characters for context
+            
+        Returns:
+            Dict with context, sources, and routing info
+        """
+        from pipeline.query_router import QueryRouter
+        
+        # Analyze query
+        router = QueryRouter(llm_callable=llm_callable)
+        analysis = router.analyze_query(query_text)
+        
+        logger.info(f"Query routing: {analysis.query_type} (confidence: {analysis.confidence:.2f})")
+        logger.info(f"Reasoning: {analysis.reasoning}")
+        
+        # Route based on query type
+        if not analysis.requires_retrieval:
+            return {
+                "context": "",
+                "sources": [],
+                "routing_info": {
+                    "query_type": analysis.query_type,
+                    "reasoning": analysis.reasoning,
+                    "retrieval_used": False
+                }
+            }
+        
+        # Get all index pairs
+        index_pairs = self.get_all_index_pairs()
+        if not index_pairs:
+            logger.warning("No FAISS indexes found")
+            return {
+                "context": "",
+                "sources": [],
+                "routing_info": {
+                    "query_type": analysis.query_type,
+                    "reasoning": "No indexes available",
+                    "retrieval_used": False
+                }
+            }
+        
+        # Execute retrieval based on query type
+        if analysis.query_type == "simple_factual":
+            results = self._simple_retrieval(query_text, index_pairs, analysis.suggested_top_k)
+        else:  # complex_analytical
+            results = self._complex_retrieval(query_text, index_pairs, analysis.suggested_top_k)
+        
+        # Build context
+        context = self.build_context(results, max_chars=max_chars)
+        
+        return {
+            "context": context,
+            "sources": results,
+            "routing_info": {
+                "query_type": analysis.query_type,
+                "reasoning": analysis.reasoning,
+                "retrieval_used": True,
+                "num_sources": len(results),
+                "top_k": analysis.suggested_top_k
+            }
+        }
+
+    def _simple_retrieval(self, query_text: str, index_pairs: list, 
+                        top_k: int) -> list:
+        """Single-step retrieval for simple factual queries"""
+        all_results = []
+        
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = self.pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=query_text,
+                    top_k=top_k
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Error searching in {faiss_file}: {e}")
+                continue
+        
+        # Sort by similarity and return top-k
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        return all_results[:top_k]
+
+    def _complex_retrieval(self, query_text: str, index_pairs: list, 
+                        top_k: int) -> list:
+        """Multi-step iterative retrieval for complex analytical queries"""
+        
+        # Step 1: Initial broad retrieval
+        initial_k = min(top_k * 2, 30)
+        all_results = []
+        
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = self.pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=query_text,
+                    top_k=initial_k
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Error searching in {faiss_file}: {e}")
+                continue
+        
+        # Sort by similarity
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        
+        # Step 2: Diversity filtering - ensure multiple sources/pages
+        diverse_results = self._diversify_results(all_results, top_k)
+        
+        logger.info(f"Complex retrieval: {len(all_results)} initial → {len(diverse_results)} diverse results")
+        
+        return diverse_results
+
+    def _diversify_results(self, results: list, target_k: int) -> list:
+        """
+        Ensure diversity in results by including chunks from different sources/pages.
+        Helps with complex queries that may need broader context.
+        """
+        if not results:
+            return []
+        
+        diverse = []
+        seen_sources = set()
+        
+        # First pass: one result per unique (file, page) combination
+        for result in results:
+            file_name = result.get("file_name", "")
+            page = result.get("page_number", 0)
+            source_key = f"{file_name}:{page}"
+            
+            if source_key not in seen_sources:
+                diverse.append(result)
+                seen_sources.add(source_key)
+                
+                if len(diverse) >= target_k:
+                    break
+        
+        # Second pass: fill remaining slots with high-scoring duplicates
+        if len(diverse) < target_k:
+            for result in results:
+                if result not in diverse:
+                    diverse.append(result)
+                    if len(diverse) >= target_k:
+                        break
+        
+        return diverse
 
 def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> Dict[str, Any]:
     """

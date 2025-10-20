@@ -9,6 +9,8 @@ import shutil
 import threading
 import queue
 import time
+import logging
+logger = logging.getLogger(__name__)
 
 # Import your custom modules
 from chat_handler import build_messages
@@ -264,7 +266,6 @@ chat_html_parts.append("</div>")
 st.markdown("".join(chat_html_parts), unsafe_allow_html=True)
 
 # === RETRIEVAL SOURCES (UI) ===
-# === RETRIEVAL SOURCES (UI) ===
 sources = st.session_state.get("last_sources", [])
 if sources:
     st.markdown("### Nguồn tham khảo")
@@ -286,8 +287,6 @@ if sources:
         except Exception:
             score = 0.0
 
-        import logging
-        logger = logging.getLogger(__name__)
         # Get the full text without any truncation
         snippet = src.get("snippet", "") or src.get("text", "")
         logger.info(f"Source {i}: snippet length = {len(snippet)}, first 100 chars = {snippet[:100]}")
@@ -301,10 +300,34 @@ if sources:
 else:
     st.info("Chưa có nguồn tham khảo nào được tìm thấy. Hãy đặt câu hỏi để hệ thống tìm kiếm tài liệu liên quan.")
 
-# === BACKEND CALL ===
+# === ROUTING INFO DISPLAY ===
+routing_info = st.session_state.get("last_routing_info", {})
+if routing_info:
+    with st.expander("🎯 Query Routing Info"):
+        query_type = routing_info.get("query_type", "unknown")
+        reasoning = routing_info.get("reasoning", "N/A")
+        retrieval_used = routing_info.get("retrieval_used", False)
+        
+        # Color-code query types
+        type_colors = {
+            "simple_factual": "🟢",
+            "complex_analytical": "🔵", 
+            "general_conversation": "⚪"
+        }
+        icon = type_colors.get(query_type, "❓")
+        
+        st.markdown(f"**Query Type:** {icon} {query_type}")
+        st.markdown(f"**Reasoning:** {reasoning}")
+        st.markdown(f"**Retrieval Used:** {'✅ Yes' if retrieval_used else '❌ No'}")
+        
+        if retrieval_used:
+            num_sources = routing_info.get("num_sources", 0)
+            top_k = routing_info.get("top_k", 0)
+            st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
+
 def ask_backend(prompt_text: str) -> Dict[str, Any]:
     """
-    Xử lý request tới LLM backend
+    Xử lý request tới LLM backend với adaptive retrieval
     
     Args:
         prompt_text: User query
@@ -313,35 +336,61 @@ def ask_backend(prompt_text: str) -> Dict[str, Any]:
         Response từ LLM
     """
     try:
-        # TODO: Khi có retrieval system, lấy context ở đây
-        context = ""  # Tạm thời để trống
+        context = ""
         
-        # Build messages bằng chat_handler
-        # Lấy context từ Retrieval (nếu có) và lưu nguồn để hiển thị.
+        # === ADAPTIVE RETRIEVAL ===
         try:
-            ret = fetch_retrieval(prompt_text, top_k=10, max_chars=8000)  # Tăng lên 8000
+            from pipeline.rag_pipeline import RAGPipeline
+            
+            pipeline = RAGPipeline()
+            retriever = RAGRetrievalService(pipeline)
+            
+            # Create LLM callable for query classification
+            def llm_for_routing(messages):
+                if backend == "gemini":
+                    return call_gemini_with_timing(messages)
+                else:
+                    return call_lmstudio_with_timing(messages)
+            
+            # Use adaptive retrieval
+            ret = retriever.adaptive_retrieve(
+                query_text=prompt_text,
+                llm_callable=llm_for_routing,
+                max_chars=8000
+            )
+            
             context = ret.get("context", "") or ""
             st.session_state["last_sources"] = ret.get("sources", [])
-        except Exception:
+            
+            # Store routing info for display
+            routing_info = ret.get("routing_info", {})
+            st.session_state["last_routing_info"] = routing_info
+            
+            logger.info(f"Adaptive routing: {routing_info.get('query_type')} - "
+                       f"Retrieval: {routing_info.get('retrieval_used')}")
+            
+        except Exception as e:
+            logger.error(f"Adaptive retrieval failed: {e}")
             context = ""
             st.session_state["last_sources"] = []
-
+            st.session_state["last_routing_info"] = {}
+        
+        # Build messages
         messages = build_messages(
             query=prompt_text,
             context=context,
             history=st.session_state["messages"]
         )
         
-        # Gọi LLM tương ứng
+        # Call LLM
         if backend == "gemini":
             reply = call_gemini_with_timing(messages)
-        else:  # lmstudio
+        else:
             reply = call_lmstudio_with_timing(messages)
         
         return reply
     
     except Exception as e:
-        # Return dict format to match API functions
         return {
             "response": f"[Error] {e}",
             "time_taken": 0,
