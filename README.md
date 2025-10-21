@@ -215,4 +215,52 @@ else:
 - **Modular Design**: Clean separation of concerns with factory patterns
 - **Error Handling**: Robust processing with connection testing and fallbacks
 - **Normalized Embeddings**: Vectors normalized for optimal cosine similarity performance
+- **Reranking Support**: Optional BM25 and BGE rerankers for improved retrieval accuracy
+
+## 🔄 Reranking (New!)
+
+Improve retrieval accuracy with optional reranking. The pipeline supports two reranker types:
+
+### Quick Usage
+
+```python
+from pipeline.rag_pipeline import RAGPipeline
+
+# Initialize with BM25 reranker
+pipeline = RAGPipeline(
+    output_dir="data",
+    reranker_type="bm25"  # or "bge" for BGE reranker
+)
+
+# Search with reranking
+results = pipeline.search_similar(
+    faiss_file=faiss_file,
+    metadata_map_file=metadata_file,
+    query_text="your query",
+    top_k=5,
+    use_reranking=True,
+    reranking_top_k=15  # Retrieve 15 candidates, rerank to top 5
+)
+```
+
+### Available Rerankers
+
+- **BM25**: Fast, keyword-based reranking (requires `rank_bm25`)
+- **BGE**: Semantic similarity reranking (requires `transformers` and `torch`)
+
+### Demo & Documentation
+
+```bash
+# Run reranking demo
+python demo_reranker.py
+
+# Run integration test
+python test_reranker_integration.py
+
+# Run unit tests
+python -m pytest test/pipeline/test_reranker_integration.py -v
+```
+
+**Full Documentation**: See [RERANKER_GUIDE.md](RERANKER_GUIDE.md) for detailed usage, configuration, and examples.
+
 "# RAG_chatbot" 
