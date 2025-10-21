@@ -19,3 +19,8 @@ streamlit
 google-generativeai
 openai
 unidecode
+torch
+transformers
+sentence-transformers
+FlagEmbedding
+einops
