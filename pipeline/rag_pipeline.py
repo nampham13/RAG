@@ -25,6 +25,8 @@ from pipeline.retriever import Retriever
 from pipeline.data_quality_analyzer import DataQualityAnalyzer
 from pipeline.data_integrity_checker import DataIntegrityChecker
 from pipeline.chunk_cache_manager import ChunkCacheManager
+from rerankers.reranker_factory import RerankerFactory
+from rerankers.i_reranker import IReranker
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +45,9 @@ class RAGPipeline:
     def __init__(self, 
                  output_dir: str = "data",
                  pdf_dir: Optional[str | Path] = None,
-                 model_type: OllamaModelType = OllamaModelType.GEMMA):
+                 model_type: OllamaModelType = OllamaModelType.GEMMA,
+                 reranker_type: Optional[str] = None,
+                 reranker_kwargs: Optional[Dict[str, Any]] = None):
         """
         Initialize RAG Pipeline.
         
@@ -51,10 +55,13 @@ class RAGPipeline:
             output_dir: Directory để lưu output files
             pdf_dir: Directory chứa PDF files (default: output_dir/pdf)
             model_type: Ollama model type (GEMMA hoặc BGE_M3)
+            reranker_type: Type of reranker to use ('bm25', 'bge', or None for no reranking)
+            reranker_kwargs: Additional arguments for reranker initialization
         """
         self.output_dir = Path(output_dir)
         self.pdf_dir = Path(pdf_dir) if pdf_dir else self.output_dir / "pdf"
         self.model_type = model_type
+        self.reranker_type = reranker_type
         
         # Create output subdirectories
         self.chunks_dir = self.output_dir / "chunks"
@@ -83,10 +90,23 @@ class RAGPipeline:
         else:
             self.embedder = self.model_switcher.switch_to_bge_m3()
         
+        # Initialize reranker if specified
+        self.reranker: Optional[IReranker] = None
+        if reranker_type:
+            try:
+                reranker_kwargs = reranker_kwargs or {}
+                self.reranker = RerankerFactory.create_from_config(reranker_type, **reranker_kwargs)
+                if self.reranker:
+                    logger.info(f"Reranker initialized: {reranker_type}")
+                else:
+                    logger.warning(f"Failed to initialize reranker: {reranker_type}")
+            except Exception as e:
+                logger.error(f"Error initializing reranker: {e}")
+        
         # Initialize supporting components
         self.vector_store = VectorStore(self.vectors_dir)
         self.summary_generator = SummaryGenerator(self.metadata_dir, self.output_dir)
-        self.retriever = Retriever(self.embedder)
+        self.retriever = Retriever(self.embedder, reranker=self.reranker)
 
         # Initialize specialized components using composition
         self.quality_analyzer = DataQualityAnalyzer(
@@ -111,6 +131,7 @@ class RAGPipeline:
         logger.info(f"Chunker: HybridChunker")
         logger.info(f"Embedder: {self.embedder.profile.model_id}")
         logger.info(f"Dimension: {self.embedder.dimension}")
+        logger.info(f"Reranker: {self.reranker_type or 'None'}")
         logger.info(f"Output: {self.output_dir}")
     
     def is_chunk_processed(self, chunk_id: str, content_hash: str) -> bool:
@@ -228,7 +249,8 @@ class RAGPipeline:
             "loader": "PDFLoader",
             "chunker": str(self.chunker),
             "vector_store": "FAISS",
-            "cache_enabled": True
+            "cache_enabled": True,
+            "reranker": self.reranker_type or "None"
         }
     
     def process_pdf(self, pdf_path: str | Path, chunk_callback=None) -> Dict[str, Any]:
@@ -497,7 +519,8 @@ class RAGPipeline:
     
     def search_similar(self, faiss_file: Path, metadata_map_file: Path,
                     query_text: str, top_k: int = 5, use_softmax: bool = True,
-                    temperature: Optional[float] = None) -> List[Dict[str, Any]]:
+                    temperature: Optional[float] = None, use_reranking: bool = False,
+                    reranking_top_k: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Search for similar chunks using FAISS index.
         
@@ -506,11 +529,18 @@ class RAGPipeline:
             metadata_map_file: Path to metadata map file
             query_text: Query text to search
             top_k: Number of results to return
+            use_softmax: Whether to apply softmax scoring
+            temperature: Temperature for softmax scoring
+            use_reranking: Whether to apply reranking if reranker is available
+            reranking_top_k: Number of candidates to retrieve before reranking
             
         Returns:
             List of similar chunks with metadata and distances
         """
-        return self.retriever.search_similar(faiss_file, metadata_map_file, query_text, top_k, use_softmax, temperature)
+        return self.retriever.search_similar(
+            faiss_file, metadata_map_file, query_text, top_k, 
+            use_softmax, temperature, use_reranking, reranking_top_k
+        )
 
 def main():
     """Main entry point for RAG Pipeline."""

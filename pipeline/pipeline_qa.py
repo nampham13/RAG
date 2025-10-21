@@ -149,10 +149,20 @@ class RAGRetrievalService:
                 break
         return "\n\n".join(parts)
 
-    def retrieve(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def retrieve(self, query_text: str, top_k: int = 5, use_reranking: bool = False,
+                reranking_top_k: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Trả về danh sách kết quả giống với retriever (metadata + similarity_score).
         Nếu không có index hoặc embedder không sẵn sàng, trả về list rỗng.
+        
+        Args:
+            query_text: Query text to search
+            top_k: Number of results to return
+            use_reranking: Whether to apply reranking if reranker is available
+            reranking_top_k: Number of candidates to retrieve before reranking
+        
+        Returns:
+            List of search results with metadata and similarity scores
         """
         try:
             pair = self.get_latest_index_pair()
@@ -168,6 +178,8 @@ class RAGRetrievalService:
                 metadata_map_file=metadata_map_file,
                 query_text=query_text,
                 top_k=top_k,
+                use_reranking=use_reranking,
+                reranking_top_k=reranking_top_k
             )
         except Exception as e:
             logger.error(f"Retrieval error: {e}")
@@ -204,13 +216,31 @@ def fetch_retrieval(
     pipeline: Optional[RAGPipeline] = None,
     top_k: int = 5,
     max_chars: int = 4000,
+    use_reranking: bool = False,
+    reranking_top_k: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Tiện ích một hàm: thực hiện retrieval và trả về {context, sources} cho UI.
+    
+    Args:
+        query_text: Query text to search
+        pipeline: RAG pipeline instance (creates default if None)
+        top_k: Number of results to return
+        max_chars: Maximum characters for context
+        use_reranking: Whether to apply reranking if reranker is available
+        reranking_top_k: Number of candidates to retrieve before reranking
+        
+    Returns:
+        Dict with 'context' and 'sources' keys
     """
     if pipeline is None:
         pipeline = RAGPipeline(output_dir="data")
     service = RAGRetrievalService(pipeline)
-    results = service.retrieve(query_text=query_text, top_k=top_k)
+    results = service.retrieve(
+        query_text=query_text, 
+        top_k=top_k,
+        use_reranking=use_reranking,
+        reranking_top_k=reranking_top_k
+    )
     context = service.build_context(results, max_chars=max_chars) if results else ""
     return {"context": context, "sources": results}
