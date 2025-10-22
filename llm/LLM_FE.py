@@ -152,7 +152,7 @@ with st.sidebar:
     st.markdown("### Upload file")
     uploaded_file = st.file_uploader("Chọn file để tải lên", type=["pdf", "docx", "txt"])
     if uploaded_file is not None:
-        save_dir_path = f"{paths_data_dir()} + /pdf"
+        save_dir_path = f"{paths_data_dir()}/pdf"
         os.makedirs(save_dir_path, exist_ok=True)
         save_path = os.path.join(str(save_dir_path), uploaded_file.name)
         with open(save_path, "wb") as f:
