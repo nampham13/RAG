@@ -470,7 +470,7 @@ def ask_backend(prompt_text: str) -> Dict[str, Any]:
             ret = fetch_retrieval_with_rewrite(
                 query_text=prompt_text,
                 llm_callable=llm_for_routing,
-                top_k=5,
+                top_k=10,
                 max_chars=8000
             )
             routing_info = ret.get("rewrite_info", {})

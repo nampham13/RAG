@@ -394,7 +394,7 @@ def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> D
         logger.error(f"Lỗi trong fetch_retrieval: {e}")
         return {"context": "", "sources": []}
 
-def fetch_retrieval_with_rewrite(query_text: str, llm_callable=None, top_k: int = 5, max_chars: int = 8000) -> Dict[str, Any]:
+def fetch_retrieval_with_rewrite(query_text: str, llm_callable=None, top_k: int = 10, max_chars: int = 8000) -> Dict[str, Any]:
     """
     Query rewriting version of retrieval.
     Uses LLM to rewrite the query for better retrieval before searching.
