@@ -393,3 +393,92 @@ def fetch_retrieval(query_text: str, top_k: int = 5, max_chars: int = 8000) -> D
     except Exception as e:
         logger.error(f"Lỗi trong fetch_retrieval: {e}")
         return {"context": "", "sources": []}
+
+def fetch_retrieval_with_rewrite(query_text: str, llm_callable=None, top_k: int = 5, max_chars: int = 8000) -> Dict[str, Any]:
+    """
+    Query rewriting version of retrieval.
+    Uses LLM to rewrite the query for better retrieval before searching.
+    
+    Args:
+        query_text: Original user query
+        llm_callable: LLM callable for query rewriting
+        top_k: Number of results to return
+        max_chars: Max context length
+        
+    Returns:
+        Dict with keys: "context" (str), "sources" (list), "rewrite_info" (dict)
+    """
+    try:
+        from pipeline.rag_pipeline import RAGPipeline
+        pipeline = RAGPipeline()
+        retriever = RAGRetrievalService(pipeline)
+        
+        # Get FAISS indexes
+        index_pairs = retriever.get_all_index_pairs()
+        if not index_pairs:
+            logger.warning("No FAISS indexes found")
+            return {"context": "", "sources": [], "rewrite_info": {}}
+        
+        # Rewrite query using LLM if available
+        rewritten_query = query_text
+        rewrite_info = {"original_query": query_text, "rewritten_query": query_text, "rewrite_used": False}
+        
+        if llm_callable:
+            try:
+                rewrite_prompt = f"""Rewrite the following query to be more specific and optimized for document retrieval. Focus on:
+- Making implicit information explicit
+- Adding relevant keywords
+- Breaking down complex questions
+- Maintaining the original intent
+
+Original query: {query_text}
+
+Respond with ONLY the rewritten query, no explanation."""
+
+                messages = [{"role": "user", "content": rewrite_prompt}]
+                result = llm_callable(messages)
+                rewritten_query = result.get("response", query_text).strip()
+                
+                # Clean up the response (remove quotes, extra whitespace)
+                rewritten_query = rewritten_query.strip('"').strip("'").strip()
+                
+                rewrite_info["rewritten_query"] = rewritten_query
+                rewrite_info["rewrite_used"] = True
+                
+                logger.info(f"Query rewritten: '{query_text}' -> '{rewritten_query}'")
+                
+            except Exception as e:
+                logger.warning(f"Query rewriting failed: {e}, using original query")
+                rewritten_query = query_text
+        
+        # Search using rewritten query
+        all_results = []
+        for faiss_file, metadata_file in index_pairs:
+            try:
+                results = pipeline.search_similar(
+                    faiss_file=faiss_file,
+                    metadata_map_file=metadata_file,
+                    query_text=rewritten_query,
+                    top_k=top_k * 2
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Error searching in {faiss_file}: {e}")
+                continue
+        
+        # Sort and get top-k
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        top_results = all_results[:top_k]
+        
+        # Build context
+        context = retriever.build_context(top_results, max_chars=max_chars)
+        
+        return {
+            "context": context,
+            "sources": top_results,
+            "rewrite_info": rewrite_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in fetch_retrieval_with_rewrite: {e}")
+        return {"context": "", "sources": [], "rewrite_info": {}}
