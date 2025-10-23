@@ -133,7 +133,8 @@ Respond ONLY with a JSON object in this exact format:
         # Complex analytical patterns
         complex_patterns = ['compare', 'analyze', 'evaluate', 'assess', 'explain how',
                           'what are the implications', 'discuss', 'elaborate',
-                          'what factors', 'why does', 'how does', 'relationship between']
+                          'what factors', 'why does', 'how does', 'relationship between', 
+                          'đánh giá', 'giải thích', 'phân tích', 'so sánh', 'làm sao']
         if any(pattern in query_lower for pattern in complex_patterns):
             return QueryAnalysis(
                 query_type="complex_analytical",
@@ -144,7 +145,7 @@ Respond ONLY with a JSON object in this exact format:
             )
         
         # Simple factual patterns (default for queries with question marks or "what/who/when/where")
-        factual_patterns = ['what is', 'who is', 'when', 'where', 'define', 'meaning of']
+        factual_patterns = ['what is', 'who is', 'when', 'where', 'define', 'meaning of', 'là gì', 'là sao', 'là']
         if any(pattern in query_lower for pattern in factual_patterns) or '?' in query:
             return QueryAnalysis(
                 query_type="simple_factual",

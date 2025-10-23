@@ -296,8 +296,8 @@ class RAGRetrievalService:
                 }
             }
         
-        # Use provided top_k or fall back to router's suggestion
-        final_top_k = top_k if top_k else analysis.suggested_top_k
+        # Use suggested top_k or fall back to router's suggestion
+        final_top_k = analysis.suggested_top_k if analysis.suggested_top_k else top_k
         
         # Execute retrieval based on query type
         if analysis.query_type == "simple_factual":
