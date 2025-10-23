@@ -1,7 +1,7 @@
 """
 RAG Retrieval Service with Reranking
 =====================================
-Enhanced retrieval service with BGE-v2 reranker integration for better result quality.
+Enhanced retrieval service with reranker integration for better result quality.
 
 Usage:
     from RAG_system.pipeline.rag_pipeline import RAGPipeline
@@ -11,7 +11,7 @@ Usage:
     retriever = RAGRetrievalService(
         pipeline, 
         enable_rerank=True,
-        rerank_model="BAAI/bge-reranker-v2-m3"
+        reranker_type="bge"  # or "jina"
     )
     results = retriever.retrieve("Tìm điểm chính?", top_k=5)
 """
@@ -30,43 +30,51 @@ logger = logging.getLogger(__name__)
 class RAGRetrievalService:
     """
     Dịch vụ Retrieval với reranking: tìm kiếm Top-K đoạn liên quan từ FAISS index,
-    tùy chọn rerank bằng BGE-v2, và cung cấp tiện ích build context + payload hiển thị cho UI.
+    tùy chọn rerank bằng BGE hoặc Jina, và cung cấp tiện ích build context + payload hiển thị cho UI.
     """
 
     def __init__(
         self, 
         pipeline: RAGPipeline,
         enable_rerank: bool = True,
-        rerank_model: Optional[str] = None,
-        rerank_top_r: int = 20,  # Changed from rerank_top_k_multiplier
-        rerank_device: str = "cpu",
-        rerank_batch_size: int = 8,
+        reranker_type: str = "bge",  # "bge" or "jina"
+        rerank_top_r: int = 20,
+        rerank_batch_size: Optional[int] = None,
     ):
         """
         Args:
             pipeline: RAGPipeline instance
             enable_rerank: Whether to enable reranking
-            rerank_model: BGE-v2 reranker model name (e.g., "BAAI/bge-reranker-v2-m3")
+            reranker_type: Type of reranker ("bge" or "jina")
             rerank_top_r: Number of results to retrieve before reranking (default: 20)
-            rerank_device: "cpu" or "cuda"
-            rerank_batch_size: Batch size for reranking
+            rerank_batch_size: Batch size for reranking (optional, uses model defaults)
         """
         self.pipeline = pipeline
         self.enable_rerank = enable_rerank
-        self.rerank_top_r = rerank_top_r  # Changed from rerank_top_k_multiplier
+        self.rerank_top_r = rerank_top_r
+        self.reranker_type = reranker_type
         self._reranker = None
         
         # Initialize reranker if enabled
         if self.enable_rerank:
             try:
-                from rerankers.bge_v2_reranker import BGEV2Reranker
-                self._reranker = BGEV2Reranker(
-                    model_name=rerank_model,
-                    device=rerank_device,
-                    batch_size=rerank_batch_size,
-                    use_fp16=(rerank_device == "cuda")
-                )
-                logger.info(f"Reranker initialized: {rerank_model or 'default model'} | top_r={rerank_top_r}")
+                from rerankers.reranker_factory import RerankerFactory
+                
+                factory = RerankerFactory()
+                
+                if reranker_type.lower() == "bge":
+                    self._reranker = factory.create_bge()
+                    logger.info(f"BGE reranker initialized (CPU) | top_r={rerank_top_r}")
+                elif reranker_type.lower() == "jina":
+                    self._reranker = factory.create_jina()
+                    logger.info(f"Jina reranker initialized (CPU) | top_r={rerank_top_r}")
+                else:
+                    raise ValueError(f"Unsupported reranker type: {reranker_type}")
+                
+                # Override batch size if specified
+                if rerank_batch_size is not None:
+                    self._reranker.profile.batch_size = rerank_batch_size
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize reranker: {e}. Continuing without reranking.")
                 self.enable_rerank = False
@@ -75,7 +83,7 @@ class RAGRetrievalService:
     def _rerank_results(self, query_text: str, results: List[Dict[str, Any]], 
                        target_top_k: int) -> List[Dict[str, Any]]:
         """
-        Rerank results using BGE-v2 reranker.
+        Rerank results using configured reranker.
         
         Args:
             query_text: Original query
@@ -114,7 +122,7 @@ class RAGRetrievalService:
             
             # Log AFTER reranking
             logger.info(f"\n{'='*80}")
-            logger.info(f"AFTER RERANKING - Top {len(reranked)} results by BGE-v2 reranker:")
+            logger.info(f"AFTER RERANKING - Top {len(reranked)} results by {self.reranker_type.upper()} reranker:")
             logger.info(f"{'='*80}")
             for i, r in enumerate(reranked, 1):
                 file_name = r.get("file_name", "?")
@@ -316,6 +324,7 @@ class RAGRetrievalService:
                 "reasoning": analysis.reasoning,
                 "retrieval_used": True,
                 "rerank_used": self.enable_rerank,
+                "reranker_type": self.reranker_type if self.enable_rerank else None,
                 "num_sources": len(results),
                 "top_k": final_top_k,
                 "initial_retrieval_k": self.rerank_top_r if self.enable_rerank else final_top_k
@@ -437,36 +446,31 @@ class RAGRetrievalService:
 def fetch_retrieval(
     query_text: str, 
     top_k: int = 5, 
-    max_chars: int = 8000,
-    enable_rerank: bool = False,
-    rerank_model: Optional[str] = None
+    max_chars: int = 8000
 ) -> Dict[str, Any]:
     """
-    Hàm tiện ích để retrieval từ FAISS indexes với reranking option.
+    Hàm tiện ích để retrieval từ FAISS indexes.
 
     Args:
         query_text: Câu hỏi cần tìm
         top_k: Số lượng kết quả trả về
         max_chars: Độ dài tối đa của context
-        enable_rerank: Có sử dụng reranking không
-        rerank_model: Model reranker (mặc định: BAAI/bge-reranker-v2-m3)
 
     Returns:
-        Dict với keys: "context" (str), "sources" (list), "rerank_used" (bool)
+        Dict với keys: "context" (str), "sources" (list)
     """
     try:
         from pipeline.rag_pipeline import RAGPipeline
         pipeline = RAGPipeline()
         retriever = RAGRetrievalService(
             pipeline,
-            enable_rerank=enable_rerank,
-            rerank_model=rerank_model
+            enable_rerank=False
         )
 
         index_pairs = retriever.get_all_index_pairs()
         if not index_pairs:
             logger.warning("Không tìm thấy FAISS index nào")
-            return {"context": "", "sources": [], "rerank_used": False}
+            return {"context": "", "sources": []}
 
         # Use _simple_retrieval which handles reranking internally
         top_results = retriever._simple_retrieval(query_text, index_pairs, top_k)
@@ -476,10 +480,9 @@ def fetch_retrieval(
 
         return {
             "context": context,
-            "sources": top_results,
-            "rerank_used": enable_rerank and retriever._reranker is not None
+            "sources": top_results
         }
 
     except Exception as e:
         logger.error(f"Lỗi trong fetch_retrieval: {e}")
-        return {"context": "", "sources": [], "rerank_used": False}
+        return {"context": "", "sources": []}
