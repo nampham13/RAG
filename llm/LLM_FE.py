@@ -152,7 +152,7 @@ with st.sidebar:
     st.markdown("### Upload file")
     uploaded_file = st.file_uploader("Chọn file để tải lên", type=["pdf", "docx", "txt"])
     if uploaded_file is not None:
-        save_dir_path = f"{paths_data_dir()} + /pdf"
+        save_dir_path = f"{paths_data_dir()}/pdf"
         os.makedirs(save_dir_path, exist_ok=True)
         save_path = os.path.join(str(save_dir_path), uploaded_file.name)
         with open(save_path, "wb") as f:
@@ -300,143 +300,34 @@ if sources:
 else:
     st.info("Chưa có nguồn tham khảo nào được tìm thấy. Hãy đặt câu hỏi để hệ thống tìm kiếm tài liệu liên quan.")
 
-# # === ROUTING INFO DISPLAY ===
-# routing_info = st.session_state.get("last_routing_info", {})
-# if routing_info:
-#     with st.expander("🎯 Query Routing Info"):
-#         query_type = routing_info.get("query_type", "unknown")
-#         reasoning = routing_info.get("reasoning", "N/A")
-#         retrieval_used = routing_info.get("retrieval_used", False)
-        
-#         # Color-code query types
-#         type_colors = {
-#             "simple_factual": "🟢",
-#             "complex_analytical": "🔵", 
-#             "general_conversation": "⚪"
-#         }
-#         icon = type_colors.get(query_type, "❓")
-        
-#         st.markdown(f"**Query Type:** {icon} {query_type}")
-#         st.markdown(f"**Reasoning:** {reasoning}")
-#         st.markdown(f"**Retrieval Used:** {'✅ Yes' if retrieval_used else '❌ No'}")
-        
-#         if retrieval_used:
-#             num_sources = routing_info.get("num_sources", 0)
-#             top_k = routing_info.get("top_k", 0)
-#             st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
-
-# def ask_backend(prompt_text: str) -> Dict[str, Any]:
-#     """
-#     Xử lý request tới LLM backend với adaptive retrieval
-    
-#     Args:
-#         prompt_text: User query
-    
-#     Returns:
-#         Response từ LLM
-#     """
-#     try:
-#         context = ""
-        
-#         # === ADAPTIVE RETRIEVAL ===
-#         try:
-#             from pipeline.rag_pipeline import RAGPipeline
-            
-#             pipeline = RAGPipeline()
-#             retriever = RAGRetrievalService(pipeline)
-            
-#             # Create LLM callable for query classification
-#             def llm_for_routing(messages):
-#                 if backend == "gemini":
-#                     return call_gemini_with_timing(messages)
-#                 else:
-#                     return call_lmstudio_with_timing(messages)
-            
-#             # Use adaptive retrieval
-#             ret = retriever.adaptive_retrieve(
-#                 query_text=prompt_text,
-#                 llm_callable=llm_for_routing,
-#                 max_chars=8000
-#             )
-            
-#             context = ret.get("context", "") or ""
-#             st.session_state["last_sources"] = ret.get("sources", [])
-            
-#             # Store routing info for display
-#             routing_info = ret.get("routing_info", {})
-#             st.session_state["last_routing_info"] = routing_info
-            
-#             logger.info(f"Adaptive routing: {routing_info.get('query_type')} - "
-#                        f"Retrieval: {routing_info.get('retrieval_used')}")
-            
-#         except Exception as e:
-#             logger.error(f"Adaptive retrieval failed: {e}")
-#             context = ""
-#             st.session_state["last_sources"] = []
-#             st.session_state["last_routing_info"] = {}
-        
-#         # Build messages
-#         messages = build_messages(
-#             query=prompt_text,
-#             context=context,
-#             history=st.session_state["messages"]
-#         )
-        
-#         # Call LLM
-#         if backend == "gemini":
-#             reply = call_gemini_with_timing(messages)
-#         else:
-#             reply = call_lmstudio_with_timing(messages)
-        
-#         return reply
-    
-#     except Exception as e:
-#         return {
-#             "response": f"[Error] {e}",
-#             "time_taken": 0,
-#             "prompt_tokens": 0,
-#             "response_tokens": 0,
-#             "total_tokens": 0
-#         }
-
 # === ROUTING INFO DISPLAY ===
 routing_info = st.session_state.get("last_routing_info", {})
 if routing_info:
-    with st.expander("🎯 Retrieval Info"):
-        # Check if this is query rewriting or adaptive RAG
-        if "rewritten_query" in routing_info:
-            # Query Rewriting display
-            st.markdown("**Method:** 🔄 Query Rewriting")
-            st.markdown(f"**Original Query:** {routing_info.get('original_query', 'N/A')}")
-            st.markdown(f"**Rewritten Query:** {routing_info.get('rewritten_query', 'N/A')}")
-            st.markdown(f"**Rewrite Used:** {'✅ Yes' if routing_info.get('rewrite_used') else '❌ No'}")
-        else:
-            # Adaptive RAG display
-            query_type = routing_info.get("query_type", "unknown")
-            reasoning = routing_info.get("reasoning", "N/A")
-            retrieval_used = routing_info.get("retrieval_used", False)
-            
-            type_colors = {
-                "simple_factual": "🟢",
-                "complex_analytical": "🔵", 
-                "general_conversation": "⚪"
-            }
-            icon = type_colors.get(query_type, "❓")
-            
-            st.markdown("**Method:** 🧠 Adaptive RAG")
-            st.markdown(f"**Query Type:** {icon} {query_type}")
-            st.markdown(f"**Reasoning:** {reasoning}")
-            st.markdown(f"**Retrieval Used:** {'✅ Yes' if retrieval_used else '❌ No'}")
-            
-            if retrieval_used:
-                num_sources = routing_info.get("num_sources", 0)
-                top_k = routing_info.get("top_k", 0)
-                st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
+    with st.expander("🎯 Query Routing Info"):
+        query_type = routing_info.get("query_type", "unknown")
+        reasoning = routing_info.get("reasoning", "N/A")
+        retrieval_used = routing_info.get("retrieval_used", False)
+        
+        # Color-code query types
+        type_colors = {
+            "simple_factual": "🟢",
+            "complex_analytical": "🔵", 
+            "general_conversation": "⚪"
+        }
+        icon = type_colors.get(query_type, "❓")
+        
+        st.markdown(f"**Query Type:** {icon} {query_type}")
+        st.markdown(f"**Reasoning:** {reasoning}")
+        st.markdown(f"**Retrieval Used:** {'✅ Yes' if retrieval_used else '❌ No'}")
+        
+        if retrieval_used:
+            num_sources = routing_info.get("num_sources", 0)
+            top_k = routing_info.get("top_k", 0)
+            st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
 
 def ask_backend(prompt_text: str) -> Dict[str, Any]:
     """
-    Xử lý request tới LLM backend với retrieval
-    Switch between fetch_retrieval_with_rewrite and adaptive_retrieve by changing function name
+    Xử lý request tới LLM backend với adaptive retrieval
     
     Args:
         prompt_text: User query
@@ -447,50 +338,39 @@ def ask_backend(prompt_text: str) -> Dict[str, Any]:
     try:
         context = ""
         
-        # === RETRIEVAL SELECTION ===
-        # OPTION 1: Query Rewriting (uncomment to use)
-        from pipeline.pipeline_qa import fetch_retrieval_with_rewrite
-        # OPTION 2: Adaptive RAG (default, uncomment to use)
-        # from pipeline.pipeline_qa import RAGRetrievalService
-        
+        # === ADAPTIVE RETRIEVAL ===
         try:
             from pipeline.rag_pipeline import RAGPipeline
-            pipeline = RAGPipeline()
-            # retriever = RAGRetrievalService(pipeline)
             
-            # Create LLM callable
+            pipeline = RAGPipeline()
+            retriever = RAGRetrievalService(pipeline)
+            
+            # Create LLM callable for query classification
             def llm_for_routing(messages):
                 if backend == "gemini":
                     return call_gemini_with_timing(messages)
                 else:
                     return call_lmstudio_with_timing(messages)
             
-            # === SWITCH BETWEEN METHODS HERE ===
-            # OPTION 1: Query Rewriting
-            ret = fetch_retrieval_with_rewrite(
+            # Use adaptive retrieval
+            ret = retriever.adaptive_retrieve(
                 query_text=prompt_text,
                 llm_callable=llm_for_routing,
-                top_k=10,
                 max_chars=8000
             )
-            routing_info = ret.get("rewrite_info", {})
-            
-            # OPTION 2: Adaptive RAG (default)
-            # ret = retriever.adaptive_retrieve(
-            #     query_text=prompt_text,
-            #     llm_callable=llm_for_routing,
-            #     max_chars=8000
-            # )
-            # routing_info = ret.get("routing_info", {})
             
             context = ret.get("context", "") or ""
             st.session_state["last_sources"] = ret.get("sources", [])
+            
+            # Store routing info for display
+            routing_info = ret.get("routing_info", {})
             st.session_state["last_routing_info"] = routing_info
             
-            logger.info(f"Retrieval method: {routing_info}")
+            logger.info(f"Adaptive routing: {routing_info.get('query_type')} - "
+                       f"Retrieval: {routing_info.get('retrieval_used')}")
             
         except Exception as e:
-            logger.error(f"Retrieval failed: {e}")
+            logger.error(f"Adaptive retrieval failed: {e}")
             context = ""
             st.session_state["last_sources"] = []
             st.session_state["last_routing_info"] = {}
