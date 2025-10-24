@@ -18,13 +18,6 @@ except ImportError:
     EmbedderFactory = None
     EmbedderType = None
 
-try:
-    from .chunk_and_embed_pipeline import ChunkAndEmbedPipeline
-    _pipeline_available = True
-except ImportError:
-    _pipeline_available = False
-    ChunkAndEmbedPipeline = None
-
 # Import providers conditionally
 try:
     from .providers import OllamaEmbedder, GemmaEmbedder, BGE3Embedder
@@ -39,7 +32,5 @@ __all__ = ['IEmbedder', 'EmbeddingProfile']
 
 if _factory_available:
     __all__.extend(['EmbedderFactory', 'EmbedderType'])
-if _pipeline_available:
-    __all__.append('ChunkAndEmbedPipeline')
 if _providers_available:
     __all__.extend(['OllamaEmbedder', 'GemmaEmbedder', 'BGE3Embedder'])
