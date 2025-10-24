@@ -19,4 +19,4 @@ streamlit
 google-generativeai
 openai
 unidecode
-flagmembedding
+flagembedding
