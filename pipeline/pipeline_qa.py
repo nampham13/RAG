@@ -38,7 +38,7 @@ class RAGRetrievalService:
         pipeline: RAGPipeline,
         enable_rerank: bool = True,
         reranker_type: str = "bge",  # "bge" or "jina"
-        rerank_top_r: int = 20,
+        rerank_top_r: int = 50,
         rerank_batch_size: Optional[int] = None,
     ):
         """
@@ -46,7 +46,7 @@ class RAGRetrievalService:
             pipeline: RAGPipeline instance
             enable_rerank: Whether to enable reranking
             reranker_type: Type of reranker ("bge" or "jina")
-            rerank_top_r: Number of results to retrieve before reranking (default: 20)
+            rerank_top_r: Number of results to retrieve before reranking (default: 50)
             rerank_batch_size: Batch size for reranking (optional, uses model defaults)
         """
         self.pipeline = pipeline
@@ -80,21 +80,20 @@ class RAGRetrievalService:
                 self.enable_rerank = False
                 self._reranker = None
 
-    def _rerank_results(self, query_text: str, results: List[Dict[str, Any]], 
-                       target_top_k: int) -> List[Dict[str, Any]]:
+    def _rerank_results(self, query_text: str, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Rerank results using configured reranker.
+        ONLY reorders, does NOT filter - returns ALL input results in new order.
         
         Args:
             query_text: Original query
             results: List of retrieval results
-            target_top_k: Number of results to return after reranking
             
         Returns:
-            Reranked and truncated results with rerank_score added
+            Reranked results (same count as input) with rerank_score added
         """
         if not self._reranker or not results:
-            return results[:target_top_k]
+            return results
         
         try:
             # Log BEFORE reranking
@@ -112,19 +111,19 @@ class RAGRetrievalService:
                     f"text: {text_preview}..."
                 )
             
-            # Rerank using the text field
+            # Rerank ALL results without filtering
             reranked = self._reranker.rerank(
                 query=query_text,
                 candidates=results,
-                top_k=target_top_k,
+                top_k=len(results),  # Return ALL results, just reordered
                 text_key="text"
             )
             
             # Log AFTER reranking
             logger.info(f"\n{'='*80}")
-            logger.info(f"AFTER RERANKING - Top {len(reranked)} results by {self.reranker_type.upper()} reranker:")
+            logger.info(f"AFTER RERANKING - Top {min(10, len(reranked))} results by {self.reranker_type.upper()} reranker:")
             logger.info(f"{'='*80}")
-            for i, r in enumerate(reranked, 1):
+            for i, r in enumerate(reranked[:10], 1):
                 file_name = r.get("file_name", "?")
                 page = r.get("page_number", "?")
                 similarity = r.get("similarity_score", 0.0)
@@ -138,7 +137,7 @@ class RAGRetrievalService:
             
             logger.info(f"{'='*80}")
             logger.info(
-                f"Reranking summary: {len(results)} candidates → {len(reranked)} results | "
+                f"Reranking summary: {len(results)} candidates → {len(reranked)} results (reordered) | "
                 f"Rerank score range: [{reranked[-1]['rerank_score']:.4f}, {reranked[0]['rerank_score']:.4f}]"
             )
             logger.info(f"{'='*80}\n")
@@ -147,7 +146,7 @@ class RAGRetrievalService:
             
         except Exception as e:
             logger.error(f"Reranking failed: {e}. Returning original results.")
-            return results[:target_top_k]
+            return results
 
     # ---------- Retrieval utilities ----------
     def _match_metadata_for_vectors(self, vectors_file: Path) -> Optional[Path]:
@@ -259,16 +258,21 @@ class RAGRetrievalService:
         return ui_items
     
     def adaptive_retrieve(self, query_text: str, llm_callable=None, 
-                        max_chars: int = 8000, top_k: int = 5) -> Dict[str, Any]:
+                        max_chars: int = 8000, top_k: int = None) -> Dict[str, Any]:
         """
         Adaptive retrieval with reranking support.
-        Retrieves top_r results, then reranks to get top_k.
+        
+        Flow:
+        1. Analyze query to get suggested_top_k
+        2. Retrieve rerank_top_r results (e.g., 50)
+        3. Rerank ALL retrieved results (just reorder, no filtering)
+        4. Take top suggested_top_k from reranked results for LLM
         
         Args:
             query_text: Query text to search
             llm_callable: Optional LLM for query analysis
             max_chars: Maximum context length
-            top_k: Number of final results to return (default: 5)
+            top_k: Override for final result count (if None, uses router's suggested_top_k)
         """
         from pipeline.query_router import QueryRouter
         
@@ -304,8 +308,11 @@ class RAGRetrievalService:
                 }
             }
         
-        # Use provided top_k or fall back to router's suggestion
-        final_top_k = analysis.suggested_top_k if analysis.suggested_top_k else top_k
+        # Determine final output size - ONLY from analysis.suggested_top_k or override
+        # final_top_k = top_k if top_k is not None else analysis.suggested_top_k
+        final_top_k = analysis.suggested_top_k if analysis.suggested_top_k is not None else top_k
+        
+        logger.info(f"Final LLM input will be top {final_top_k} results (from router suggestion)")
         
         # Execute retrieval based on query type
         if analysis.query_type == "simple_factual":
@@ -326,21 +333,30 @@ class RAGRetrievalService:
                 "rerank_used": self.enable_rerank,
                 "reranker_type": self.reranker_type if self.enable_rerank else None,
                 "num_sources": len(results),
-                "top_k": final_top_k,
+                "final_top_k": final_top_k,
                 "initial_retrieval_k": self.rerank_top_r if self.enable_rerank else final_top_k
             }
         }
 
     def _simple_retrieval(self, query_text: str, index_pairs: list, 
-                        top_k: int) -> list:
+                        final_top_k: int) -> list:
         """
         Single-step retrieval with reranking support.
-        Retrieves top_r results, then reranks to get top_k.
-        """
-        # Determine how many to retrieve initially
-        retrieval_k = self.rerank_top_r if self.enable_rerank else top_k
         
-        logger.info(f"Simple retrieval: retrieving {retrieval_k} results, target top_k={top_k}")
+        Flow:
+        1. Retrieve rerank_top_r results (e.g., 50)
+        2. Rerank ALL retrieved results (reorder only)
+        3. Return top final_top_k from reranked results
+        
+        Args:
+            query_text: Search query
+            index_pairs: List of (faiss_file, metadata_file) tuples
+            final_top_k: Number of results to return to LLM (from analysis.suggested_top_k)
+        """
+        # Step 1: Retrieve candidates for reranking
+        retrieval_k = self.rerank_top_r if self.enable_rerank else final_top_k
+        
+        logger.info(f"Simple retrieval: fetching {retrieval_k} candidates")
         
         all_results = []
         for faiss_file, metadata_file in index_pairs:
@@ -360,27 +376,42 @@ class RAGRetrievalService:
         all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
         initial_results = all_results[:retrieval_k]
         
-        # Rerank if enabled
+        # Step 2: Rerank if enabled (reorders ALL, no filtering)
         if self.enable_rerank and initial_results:
-            logger.info(f"Reranking {len(initial_results)} results to get top {top_k}")
-            return self._rerank_results(query_text, initial_results, top_k)
+            logger.info(f"Reranking {len(initial_results)} results (will reorder all)")
+            reranked_results = self._rerank_results(query_text, initial_results)
+            
+            # Step 3: Take top final_top_k AFTER reranking
+            final_results = reranked_results[:final_top_k]
+            logger.info(f"Returning top {len(final_results)} results for LLM")
+            return final_results
         
-        return initial_results[:top_k]
+        # No reranking: just return top final_top_k
+        return initial_results[:final_top_k]
 
     def _complex_retrieval(self, query_text: str, index_pairs: list, 
-                        top_k: int) -> list:
+                        final_top_k: int) -> list:
         """
         Multi-step retrieval with reranking support.
-        Retrieves broader set, diversifies, then reranks to top_k.
-        """
-        # Step 1: Broader initial retrieval
-        if self.enable_rerank:
-            # For complex queries, retrieve 2x top_r for better diversity
-            initial_k = min(self.rerank_top_r * 2, 50)
-        else:
-            initial_k = min(top_k * 2, 50)
         
-        logger.info(f"Complex retrieval: retrieving {initial_k} results, target top_k={top_k}")
+        Flow:
+        1. Retrieve broader set (2x rerank_top_r for diversity)
+        2. Diversify to rerank_top_r results
+        3. Rerank ALL diversified results (reorder only)
+        4. Return top final_top_k from reranked results
+        
+        Args:
+            query_text: Search query
+            index_pairs: List of (faiss_file, metadata_file) tuples
+            final_top_k: Number of results to return to LLM (from analysis.suggested_top_k)
+        """
+        # Step 1: Broader initial retrieval for diversity
+        if self.enable_rerank:
+            initial_k = min(self.rerank_top_r * 2, 100)
+        else:
+            initial_k = min(final_top_k * 2, 50)
+        
+        logger.info(f"Complex retrieval: fetching {initial_k} candidates for diversity")
         
         all_results = []
         for faiss_file, metadata_file in index_pairs:
@@ -398,22 +429,28 @@ class RAGRetrievalService:
         
         all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
         
-        # Step 2: Diversity filtering to top_r for reranking
-        diverse_k = self.rerank_top_r if self.enable_rerank else top_k
+        # Step 2: Diversify to rerank_top_r for reranking input
+        diverse_k = self.rerank_top_r if self.enable_rerank else final_top_k
         diverse_results = self._diversify_results(all_results, diverse_k)
+        logger.info(f"Diversified to {len(diverse_results)} results")
         
-        # Step 3: Rerank if enabled
+        # Step 3: Rerank if enabled (reorders ALL, no filtering)
         if self.enable_rerank and diverse_results:
-            logger.info(f"Reranking {len(diverse_results)} diverse results to get top {top_k}")
-            final_results = self._rerank_results(query_text, diverse_results, top_k)
+            logger.info(f"Reranking {len(diverse_results)} diverse results (will reorder all)")
+            reranked_results = self._rerank_results(query_text, diverse_results)
+            
+            # Step 4: Take top final_top_k AFTER reranking
+            final_results = reranked_results[:final_top_k]
             logger.info(
                 f"Complex retrieval pipeline: "
-                f"{len(all_results)} initial → {len(diverse_results)} diverse → {len(final_results)} reranked"
+                f"{len(all_results)} initial → {len(diverse_results)} diverse → "
+                f"{len(reranked_results)} reranked → {len(final_results)} final for LLM"
             )
             return final_results
         
+        # No reranking: just return top final_top_k
         logger.info(f"Complex retrieval: {len(all_results)} initial → {len(diverse_results)} diverse results")
-        return diverse_results[:top_k]
+        return diverse_results[:final_top_k]
 
     def _diversify_results(self, results: list, target_k: int) -> list:
         """Ensure diversity in results by including chunks from different sources/pages."""

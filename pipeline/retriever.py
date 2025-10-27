@@ -76,8 +76,6 @@ class Retriever:
                 
                 # DEBUG: Check what's in metadata_map BEFORE copying
                 text_in_metadata = metadata_entry.get("text", "")
-                logger.info(f"DEBUG retriever BEFORE copy: idx={idx}, text length = {len(text_in_metadata)}, first 100 chars = {text_in_metadata[:100]}")
-                
                 # Create result dict manually to ensure text is preserved
                 result = {
                     "text": text_in_metadata,  # EXPLICITLY set text first

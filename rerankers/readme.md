@@ -20,3 +20,5 @@ rerankers/
 │ └── jina_reranker.py # Provider tích hợp Jina hoặc dịch vụ tương tự
 └── pycache/ # Bytecode cache (tự sinh)
 ```
+
+notice: after installing new lib in codespace delete all the cuda components to save space for models

@@ -77,8 +77,7 @@ Respond ONLY with a JSON object in this exact format:
     "reasoning": "Brief explanation",
     "confidence": 0.0-1.0,
     "requires_retrieval": true|false,
-    "suggested_top_k": 5-20
-}"""
+    "suggested_top_k": 0 for general_conversation, 10 for simple_factual, 20 for complex_analytical}"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -140,7 +139,7 @@ Respond ONLY with a JSON object in this exact format:
                 reasoning="Detected analytical/comparison keywords",
                 confidence=0.85,
                 requires_retrieval=True,
-                suggested_top_k=15
+                suggested_top_k=20
             )
         
         # Simple factual patterns (default for queries with question marks or "what/who/when/where")
@@ -151,7 +150,7 @@ Respond ONLY with a JSON object in this exact format:
                 reasoning="Detected factual question pattern",
                 confidence=0.8,
                 requires_retrieval=True,
-                suggested_top_k=5
+                suggested_top_k=10
             )
         
         # Default: treat as simple factual if it looks like a question
@@ -160,5 +159,5 @@ Respond ONLY with a JSON object in this exact format:
             reasoning="Default classification for queries",
             confidence=0.6,
             requires_retrieval=True,
-            suggested_top_k=5
+            suggested_top_k=10
         )

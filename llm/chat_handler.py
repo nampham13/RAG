@@ -90,42 +90,32 @@ def normalize_history(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return normalized
 
 
-def build_messages(query: str, context: str = "", history: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, str]]:
-    """
-    Build messages list theo OpenAI Chat Format
+def build_messages(query: str, context: str, history: list) -> list:
+    """Build messages for LLM with adaptive system prompt based on context"""
     
-    Args:
-        query: Câu hỏi hiện tại của user
-        context: Context từ retrieval (mặc định rỗng)
-        history: Lịch sử chat trước đó (mặc định None)
-    
-    Returns:
-        Messages theo format:
-        [
-            {"role": "system", "content": "..."},
-            {"role": "user", "content": "..."},
-            {"role": "assistant", "content": "..."},
-            {"role": "user", "content": "..."}  # current query
-        ]
-    """
-    messages = []
+    # Check if this is a general conversation (no context)
+    if not context or context.strip() == "":
+        # Use conversational system prompt
+        system_prompt = """You are a helpful and friendly AI assistant. 
+Engage in natural conversation with the user. Be warm, concise, and helpful.
+If the user asks factual questions that you don't have information about, politely let them know."""
+    else:
+        # Use RAG-focused system prompt
+        system_prompt = """You are a helpful AI assistant. Answer questions based on the provided context.
+If the context doesn't contain relevant information, say so politely.
 
-    # 1. System prompt (với context)
-    system_content = format_system_prompt(context)
-    messages.append({
-        "role": "system",
-        "content": system_content
-    })
+Context:
+{context}
+"""
+        system_prompt = system_prompt.format(context=context)
     
-    # 2. History (nếu có)
-    if history:
-        normalized = normalize_history(history)
-        messages.extend(normalized)
+    messages = [{"role": "system", "content": system_prompt}]
     
-    # 3. Current query
-    messages.append({
-        "role": "user",
-        "content": query
-    })
+    # Add conversation history
+    for msg in history[-10:]:  # Keep last 10 messages
+        messages.append(msg)
+    
+    # Add current query
+    messages.append({"role": "user", "content": query})
     
     return messages
