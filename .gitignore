@@ -82,3 +82,5 @@ scripts/run_pipeline.bat
 scripts/run_pipeline.ps1
 scripts/README.md
 batch_summary_*.json
+test/model/jina
+test/model/

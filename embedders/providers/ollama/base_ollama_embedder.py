@@ -43,7 +43,7 @@ class BaseOllamaEmbedder(BaseEmbedder, ABC):
     def _test_connection(self) -> None:
         """Test connection to Ollama server."""
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            response = requests.get(f"{self.base_url}/api/tags")
             if response.status_code == 200:
                 logger.info(f"Connected to Ollama server at {self.base_url}")
             else:
@@ -69,8 +69,7 @@ class BaseOllamaEmbedder(BaseEmbedder, ABC):
 
             response = requests.post(
                 f"{self.base_url}/api/embeddings",
-                json=payload,
-                timeout=30
+                json=payload
             )
 
             if response.status_code != 200:
@@ -122,7 +121,7 @@ class BaseOllamaEmbedder(BaseEmbedder, ABC):
             bool: True if available
         """
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            response = requests.get(f"{self.base_url}/api/tags")
             if response.status_code == 200:
                 models = response.json().get("models", [])
                 model_names = [m.get("name") for m in models]
@@ -139,7 +138,7 @@ class BaseOllamaEmbedder(BaseEmbedder, ABC):
             List[str]: Model names
         """
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            response = requests.get(f"{self.base_url}/api/tags")
             if response.status_code == 200:
                 models = response.json().get("models", [])
                 return [m.get("name") for m in models]
@@ -199,7 +198,7 @@ class BaseOllamaEmbedder(BaseEmbedder, ABC):
             bool: True nếu connection thành công
         """
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            response = requests.get(f"{self.base_url}/api/tags")
             return response.status_code == 200
         except Exception:
             return False

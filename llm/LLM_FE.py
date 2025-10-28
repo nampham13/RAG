@@ -322,8 +322,8 @@ if routing_info:
         
         if retrieval_used:
             num_sources = routing_info.get("num_sources", 0)
-            top_k = routing_info.get("top_k", 0)
-            st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
+            top_k = routing_info.get("final_top_k", 0)
+            st.markdown(f"**Sources Retrieved:** {num_sources} (final_top_k={top_k})")
 
 def ask_backend(prompt_text: str) -> Dict[str, Any]:
     """
