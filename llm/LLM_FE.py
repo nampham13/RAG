@@ -1,3 +1,4 @@
+import subprocess
 import sys, os
 from typing import Any, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -148,6 +149,18 @@ with st.sidebar:
     st.button("Sample Copy for...")
     st.markdown("---")
 
+    # === CLEAR CACHE ===
+    if st.button("Clear Cache"):
+        try:
+            # Get the root directory (parent of llm folder)
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            bat_file = os.path.join(root_dir, "clear_cache.bat")
+            
+            subprocess.run([bat_file], shell=True, check=True)
+            st.success("Cache cleared successfully!")
+        except Exception as e:
+            st.error(f"Error clearing cache: {str(e)}")
+            
     # === UPLOAD FILE ===
     st.markdown("### Upload file")
     uploaded_file = st.file_uploader("Chọn file để tải lên", type=["pdf", "docx", "txt"])
