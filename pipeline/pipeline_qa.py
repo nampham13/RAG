@@ -34,70 +34,39 @@ class RAGRetrievalService:
     """
 
     def __init__(
-        self, 
-        pipeline: RAGPipeline,
-        enable_rerank: bool = True,
-        reranker_type: str = "l6",  # "bge" or "jina" or 
-        rerank_top_r: int = 50,
-        rerank_batch_size: Optional[int] = None,
-    ):
+         self, 
+         pipeline: RAGPipeline,
+         enable_rerank: bool = True,
+         reranker_type: str = "l6",  # "bge" or "jina" or 
+         rerank_top_r: int = 50,
+         rerank_batch_size: Optional[int] = None,
+     ):
         """
         Args:
             pipeline: RAGPipeline instance
             enable_rerank: Whether to enable reranking
-            reranker_type: Type of reranker ("bge" or "jina")
+            reranker_type: Type of reranker ("bge" or "jina" or "l6")
             rerank_top_r: Number of results to retrieve before reranking (default: 50)
-            rerank_batch_size: Batch size for reranking (optional, uses model defaults)
+            rerank_batch_size: Batch size for reranking (ignored here; handled by pipeline.rerank)
         """
         self.pipeline = pipeline
         self.enable_rerank = enable_rerank
         self.rerank_top_r = rerank_top_r
         self.reranker_type = reranker_type
+        # No local reranker instance. Use pipeline.rerank (centralized factory + cache).
         self._reranker = None
-        
-        # Initialize reranker if enabled
-        if self.enable_rerank:
-            try:
-                from rerankers.reranker_factory import RerankerFactory
-                
-                factory = RerankerFactory()
-                
-                if reranker_type.lower() == "bge":
-                    self._reranker = factory.create_bge()
-                    logger.info(f"BGE reranker initialized (CPU) | top_r={rerank_top_r}")
-                elif reranker_type.lower() == "jina":
-                    self._reranker = factory.create_jina()
-                    logger.info(f"Jina reranker initialized (CPU) | top_r={rerank_top_r}")
-                elif reranker_type.lower() == "l6":
-                    self._reranker = factory.create_l6()
-                    logger.info(f"L6 reranker initialized (CPU) | top_r={rerank_top_r}")
-                else:
-                    raise ValueError(f"Unsupported reranker type: {reranker_type}")
-                
-                # Override batch size if specified
-                if rerank_batch_size is not None:
-                    self._reranker.profile.batch_size = rerank_batch_size
-                    
-            except Exception as e:
-                logger.error(f"Failed to initialize reranker: {e}. Continuing without reranking.")
-                self.enable_rerank = False
-                self._reranker = None
 
     def _rerank_results(self, query_text: str, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Rerank results using configured reranker.
+        Rerank results using pipeline.rerank to avoid duplicate reranker initialization.
         ONLY reorders, does NOT filter - returns ALL input results in new order.
-        
-        Args:
-            query_text: Original query
-            results: List of retrieval results
-            
-        Returns:
-            Reranked results (same count as input) with rerank_score added
+
+        Delegates reranking to self.pipeline.rerank(...) which centralizes factory usage
+        and error handling. If reranking fails or is disabled, returns original results.
         """
-        if not self._reranker or not results:
+        if not self.enable_rerank or not results:
             return results
-        
+
         try:
             # Log BEFORE reranking
             logger.info(f"\n{'='*80}")
@@ -113,15 +82,20 @@ class RAGRetrievalService:
                     f"similarity: {similarity:.4f} | "
                     f"text: {text_preview}..."
                 )
-            
-            # Rerank ALL results without filtering
-            reranked = self._reranker.rerank(
-                query=query_text,
-                candidates=results,
-                top_k=len(results),  # Return ALL results, just reordered
-                text_key="text"
+
+            # Delegate to pipeline.rerank (centralized reranker factory & policy).
+            # Pipeline.rerank is now idempotent and caches reranker instances.
+            reranked = self.pipeline.rerank(
+                query_text=query_text,
+                results=results,
+                reranker_type=self.reranker_type,
+                top_k=len(results)  # request reordering for all candidates
             )
-            
+
+            if not reranked:
+                logger.warning("Pipeline.rerank returned empty - falling back to original ordering.")
+                return results
+
             # Log AFTER reranking
             logger.info(f"\n{'='*80}")
             logger.info(f"AFTER RERANKING - Top {min(10, len(reranked))} results by {self.reranker_type.upper()} reranker:")
@@ -137,21 +111,27 @@ class RAGRetrievalService:
                     f"similarity: {similarity:.4f} | rerank: {rerank_score:.4f} | "
                     f"text: {text_preview}..."
                 )
-            
+
             logger.info(f"{'='*80}")
-            logger.info(
-                f"Reranking summary: {len(results)} candidates → {len(reranked)} results (reordered) | "
-                f"Rerank score range: [{reranked[-1]['rerank_score']:.4f}, {reranked[0]['rerank_score']:.4f}]"
-            )
+            # safe access for score range
+            try:
+                low = reranked[-1].get('rerank_score', 0.0)
+                high = reranked[0].get('rerank_score', 0.0)
+                logger.info(
+                    f"Reranking summary: {len(results)} candidates → {len(reranked)} results (reordered) | "
+                    f"Rerank score range: [{low:.4f}, {high:.4f}]"
+                )
+            except Exception:
+                logger.info(f"Reranking summary: {len(results)} candidates → {len(reranked)} results (reordered)")
+
             logger.info(f"{'='*80}\n")
-            
+
             return reranked
-            
+
         except Exception as e:
-            logger.error(f"Reranking failed: {e}. Returning original results.")
+            logger.error(f"Reranking failed (delegated to pipeline): {e}. Returning original results.")
             return results
 
-    # ---------- Retrieval utilities ----------
     def _match_metadata_for_vectors(self, vectors_file: Path) -> Optional[Path]:
         """
         Tìm file metadata_map tương ứng với vectors bằng pattern tên file.
