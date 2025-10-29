@@ -37,7 +37,7 @@ class RAGRetrievalService:
         self, 
         pipeline: RAGPipeline,
         enable_rerank: bool = True,
-        reranker_type: str = "bge",  # "bge" or "jina"
+        reranker_type: str = "l6",  # "bge" or "jina" or 
         rerank_top_r: int = 50,
         rerank_batch_size: Optional[int] = None,
     ):
@@ -68,6 +68,9 @@ class RAGRetrievalService:
                 elif reranker_type.lower() == "jina":
                     self._reranker = factory.create_jina()
                     logger.info(f"Jina reranker initialized (CPU) | top_r={rerank_top_r}")
+                elif reranker_type.lower() == "l6":
+                    self._reranker = factory.create_l6()
+                    logger.info(f"L6 reranker initialized (CPU) | top_r={rerank_top_r}")
                 else:
                     raise ValueError(f"Unsupported reranker type: {reranker_type}")
                 

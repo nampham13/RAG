@@ -11,13 +11,14 @@ from .model.reranker_profile import RerankerProfile
 from .i_reranker import IReranker
 from .providers.bge_reranker import BGEReranker
 from .providers.jina_reranker import JinaReranker
+from .providers.L6_reranker import L6Reranker
 
 
 class RerankerFactory:
     """
     Factory to build rerankers based on profile and type.
     Single Responsibility: centralize reranker instantiation logic.
-    All rerankers run on CPU only.
+    Supports BGE, Jina (CPU only), and L6 (CPU/CUDA).
     """
 
     def __init__(self, registry: Dict[RerankerType, type] | None = None):
@@ -36,14 +37,18 @@ class RerankerFactory:
             reranker_type: Type of reranker to create
             profile: Reranker configuration profile
             **kwargs: Additional arguments for specific rerankers
+                     (e.g., device='cuda' for L6)
 
         Returns:
-            IReranker: Configured reranker instance (CPU only)
+            IReranker: Configured reranker instance
         """
         if reranker_type == RerankerType.BGE:
             return BGEReranker(profile=profile)
         elif reranker_type == RerankerType.JINA:
             return JinaReranker(profile=profile)
+        elif reranker_type == RerankerType.L6:
+            device = kwargs.get('device', 'cpu')
+            return L6Reranker(profile=profile, device=device)
         
         raise ValueError(f"Unsupported reranker type: {reranker_type!r}")
 
@@ -70,6 +75,19 @@ class RerankerFactory:
             JinaReranker: Jina reranker instance (CPU only)
         """
         return JinaReranker.create_default()
+
+    def create_l6(self, device: str = 'cpu', **kwargs: Any) -> L6Reranker:
+        """
+        Factory method cho L6 local reranker.
+
+        Args:
+            device: Device to run on ('cpu' or 'cuda')
+            **kwargs: Additional arguments
+
+        Returns:
+            L6Reranker: L6 reranker instance
+        """
+        return L6Reranker.create_default(device=device)
 
     def create_bge_custom(
         self,
@@ -122,3 +140,30 @@ class RerankerFactory:
             use_fp16=False  # Always False for CPU
         )
         return JinaReranker(profile=profile)
+
+    def create_l6_custom(
+        self,
+        device: str = 'cpu',
+        batch_size: int = 16,
+        **kwargs: Any
+    ) -> L6Reranker:
+        """
+        Factory method cho custom L6 reranker configuration.
+
+        Args:
+            device: Device to run on ('cpu' or 'cuda')
+            batch_size: Batch size for scoring
+            **kwargs: Additional arguments
+
+        Returns:
+            L6Reranker: Custom L6 reranker instance
+        """
+        profile = RerankerProfile(
+            model_id=L6Reranker.MODEL_ID,
+            provider="local",
+            batch_size=batch_size,
+            max_length=kwargs.get('max_length', 512),
+            normalize=kwargs.get('normalize', False),
+            use_fp16=False
+        )
+        return L6Reranker(profile=profile, device=device)

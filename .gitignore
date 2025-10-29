@@ -83,3 +83,4 @@ scripts/README.md
 batch_summary_*.json
 test/model/jina
 test/model/
+rerank_models/
