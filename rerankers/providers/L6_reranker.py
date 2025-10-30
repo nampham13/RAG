@@ -27,7 +27,7 @@ class L6Reranker(BaseReranker):
     
     Config:
         - Model: cross-encoder/ms-marco-MiniLM-L-6-v2 (local)
-        - Model path: C:\\Users\ENGUYEMOX\OneDrive - NTT DATA EMEAL\Desktop\RAG_sprint2\RAG\rerank_models
+        - Model path: C:\\Users\\ENGUYEMOX\\OneDrive - NTT DATA EMEAL\\Desktop\\RAG_sprint2\\RAG\\rerank_models
         - Batch size: 16
         - Max length: 512
         - Provider: local
