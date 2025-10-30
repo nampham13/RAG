@@ -84,6 +84,10 @@ class RAGPipeline:
         self.vector_store = VectorStore(self.vectors_dir)
         self.summary_generator = SummaryGenerator(self.metadata_dir, self.output_dir)
         self.retriever = Retriever(self.embedder)
+
+        # Cache for instantiated rerankers (factory reuse, avoid repeated init)
+        # key: reranker type string ('bge','jina','l6'), value: reranker instance
+        self._reranker_cache: Dict[str, Any] = {}
     
     def switch_model(self, model_type: OllamaModelType) -> None:
         """
@@ -381,6 +385,68 @@ class RAGPipeline:
             List of similar chunks with metadata and distances
         """
         return self.retriever.search_similar(faiss_file, metadata_map_file, query_text, top_k, use_softmax, temperature)
+    
+    def rerank(self, query_text: str, results: List[Dict[str, Any]], 
+               reranker_type: Optional[str] = None, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Rerank a list of retrieval results using the project's reranker factory.
+        Nếu reranker không khởi tạo được hoặc có lỗi, trả về results nguyên vẹn.
+
+        Args:
+            query_text: Original query text
+            results: Candidate result list (dictionaries containing "text" key)
+            reranker_type: 'bge', 'jina' hoặc 'l6' (mặc định 'l6' nếu None)
+            top_k: Số lượng kết quả mong muốn sau rerank (mặc định giữ nguyên)
+        Returns:
+            Reranked list (reordered) hoặc original results nếu có lỗi
+        """
+        if not results:
+            return results
+
+        try:
+            from rerankers.reranker_factory import RerankerFactory
+            factory = RerankerFactory()
+            rt = (reranker_type or "l6").lower()
+
+            # Idempotency: if candidates already reranked by the same reranker, skip.
+            # We assume rerankers tag results with 'reranked_by' on output.
+            if all(isinstance(r, dict) and r.get("reranked_by") == rt for r in results):
+                logger.info(f"Results already reranked by '{rt}', skipping rerank.")
+                return results
+
+            # Reuse cached reranker instance to avoid double init / repeated connections
+            reranker = self._reranker_cache.get(rt)
+            if reranker is None:
+                if rt == "bge":
+                    reranker = factory.create_bge()
+                elif rt == "jina":
+                    reranker = factory.create_jina()
+                else:
+                    reranker = factory.create_l6()
+                # cache for future calls
+                self._reranker_cache[rt] = reranker
+
+            desired_k = top_k if top_k is not None else len(results)
+
+            # The reranker.rerank contract: rerank(query, candidates, top_k, text_key)
+            reranked = reranker.rerank(
+                query=query_text,
+                candidates=results,
+                top_k=desired_k,
+                text_key="text"
+            )
+
+            # Ensure reranked list carries a marker to avoid duplicate work upstream
+            for r in reranked:
+                if isinstance(r, dict):
+                    r.setdefault("reranked_by", rt)
+
+            return reranked
+
+        except Exception as e:
+            logger.error(f"RAGPipeline.rerank failed: {e}")
+            return results
+    
 
 def main():
     """Main entry point for RAG Pipeline."""

@@ -33,6 +33,13 @@ except ImportError:
     _jina_available = False
     JinaReranker = None
 
+try:
+    from .providers.L6_reranker import L6Reranker
+    _l6_available = True
+except ImportError:
+    _l6_available = False
+    L6Reranker = None
+
 __all__ = ['IReranker', 'RerankerProfile']
 
 if _factory_available:
@@ -41,3 +48,5 @@ if _bge_available:
     __all__.append('BGEReranker')
 if _jina_available:
     __all__.append('JinaReranker')
+if _l6_available:
+    __all__.append('L6Reranker')
