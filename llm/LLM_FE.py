@@ -1,3 +1,4 @@
+import subprocess
 import sys, os
 from typing import Any, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -148,6 +149,18 @@ with st.sidebar:
     st.button("Sample Copy for...")
     st.markdown("---")
 
+    # === CLEAR CACHE ===
+    if st.button("Clear Cache"):
+        try:
+            # Get the root directory (parent of llm folder)
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            bat_file = os.path.join(root_dir, "clear_cache.bat")
+            
+            subprocess.run([bat_file], shell=True, check=True)
+            st.success("Cache cleared successfully!")
+        except Exception as e:
+            st.error(f"Error clearing cache: {str(e)}")
+            
     # === UPLOAD FILE ===
     st.markdown("### Upload file")
     uploaded_file = st.file_uploader("Chọn file để tải lên", type=["pdf", "docx", "txt"])
@@ -174,6 +187,39 @@ with st.sidebar:
     if "processing_progress" not in st.session_state:
         st.session_state["processing_progress"] = {}
 
+    # ----- Add slider for rerank_top_r (0-100) -----
+    if "top_r" not in st.session_state:
+        st.session_state["top_r"] = 50
+    st.slider(
+        "Rerank candidates (top_r) — number of candidates to fetch before reranking",
+        min_value=25,
+        max_value=100,
+        value=st.session_state["top_r"],
+        key="top_r",
+        help="Set how many candidates to retrieve from FAISS before applying reranking (0 disables large prefetch)."
+    )
+
+    # ----- Add rerank enable toggle and reranker type selection -----
+    if "enable_rerank" not in st.session_state:
+        st.session_state["enable_rerank"] = True
+    if "reranker_type" not in st.session_state:
+        st.session_state["reranker_type"] = "l6"  # options: "l6", "bge", "jina"
+
+    st.checkbox(
+        "Enable reranking",
+        value=st.session_state["enable_rerank"],
+        key="enable_rerank",
+        help="Toggle to enable/disable reranking step (when disabled, retrieval returns top-K by similarity)."
+    )
+
+    st.selectbox(
+        "Reranker type",
+        options=["l6", "bge", "jina"],
+        index=["l6", "bge", "jina"].index(st.session_state["reranker_type"]) if st.session_state.get("reranker_type") in ["l6","bge","jina"] else 0,
+        key="reranker_type",
+        help="Select which local reranker provider to use when reranking is enabled."
+    )
+
     process_disabled = st.session_state["is_processing"] or unprocessed_count == 0
     if st.button(
             f"Process Documents ({unprocessed_count})",
@@ -196,7 +242,13 @@ with st.sidebar:
         import pickle
         from pipeline.rag_pipeline import RAGPipeline
         pipeline = RAGPipeline()
-        retriever = RAGRetrievalService(pipeline)
+        # Respect UI sidebar toggles — pass explicit rerank options so system uses single decision point
+        retriever = RAGRetrievalService(
+            pipeline,
+            enable_rerank=st.session_state.get("enable_rerank", True),
+            reranker_type=st.session_state.get("reranker_type", "l6"),
+            rerank_top_r=st.session_state.get("top_r", 50)
+        )
         index_pairs = retriever.get_all_index_pairs()
         
         if index_pairs:
@@ -322,8 +374,26 @@ if routing_info:
         
         if retrieval_used:
             num_sources = routing_info.get("num_sources", 0)
-            top_k = routing_info.get("top_k", 0)
-            st.markdown(f"**Sources Retrieved:** {num_sources} (top_k={top_k})")
+            top_k = routing_info.get("final_top_k", 0)
+            st.markdown(f"**Sources Retrieved:** {num_sources} (final_top_k={top_k})")
+
+def get_or_create_retriever():
+    """
+    Reuse a single RAGPipeline + RAGRetrievalService across Streamlit session.
+    Avoid reinitializing Ollama/pipeline/reranker on every call.
+    """
+    if "rag_pipeline" not in st.session_state:
+        from pipeline.rag_pipeline import RAGPipeline
+        st.session_state["rag_pipeline"] = RAGPipeline()
+    if "rag_retriever" not in st.session_state:
+        pipeline = st.session_state["rag_pipeline"]
+        st.session_state["rag_retriever"] = RAGRetrievalService(
+            pipeline,
+            enable_rerank=st.session_state.get("enable_rerank", True),
+            reranker_type=st.session_state.get("reranker_type", "l6"),
+            rerank_top_r=st.session_state.get("top_r", 50)
+        )
+    return st.session_state["rag_retriever"]
 
 def ask_backend(prompt_text: str) -> Dict[str, Any]:
     """
@@ -340,10 +410,7 @@ def ask_backend(prompt_text: str) -> Dict[str, Any]:
         
         # === ADAPTIVE RETRIEVAL ===
         try:
-            from pipeline.rag_pipeline import RAGPipeline
-            
-            pipeline = RAGPipeline()
-            retriever = RAGRetrievalService(pipeline)
+            retriever = get_or_create_retriever()
             
             # Create LLM callable for query classification
             def llm_for_routing(messages):
@@ -370,10 +437,10 @@ def ask_backend(prompt_text: str) -> Dict[str, Any]:
                        f"Retrieval: {routing_info.get('retrieval_used')}")
             
         except Exception as e:
-            logger.error(f"Adaptive retrieval failed: {e}")
-            context = ""
-            st.session_state["last_sources"] = []
-            st.session_state["last_routing_info"] = {}
+             logger.error(f"Adaptive retrieval failed: {e}")
+             context = ""
+             st.session_state["last_sources"] = []
+             st.session_state["last_routing_info"] = {}
         
         # Build messages
         messages = build_messages(
@@ -408,10 +475,10 @@ if prompt := st.chat_input("Type a new message here", disabled=st.session_state[
 
 if st.session_state["is_generating"] and st.session_state["pending_prompt"]:
     start_time = time.time()
-    result = ask_backend(st.session_state["pending_prompt"])
-    total_time = time.time() - start_time  # Calculate total time including retrieval
+    # Single call to backend (including retrieval). Show spinner while working.
     with st.spinner("Assistant is typing..."):
         result = ask_backend(st.session_state["pending_prompt"])
+    total_time = time.time() - start_time  # total time including retrieval
     st.session_state["messages"].append({
         "role": "assistant",
         "content": result["response"],
